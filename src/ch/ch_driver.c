@@ -944,7 +944,9 @@ static int chStateInitialize(bool privileged,
         goto cleanup;
     }
 
-    ret = VIR_DRV_STATE_INIT_COMPLETE;
+    ch_driver->privileged = privileged;
+
+    return VIR_DRV_STATE_INIT_COMPLETE;
 
  cleanup:
     if (ret != VIR_DRV_STATE_INIT_COMPLETE)

@@ -44,6 +44,11 @@ struct _virCHDriver
 {
     virMutex lock;
 
+    bool privileged;
+
+    /* Embedded Mode: Not yet supported */
+    char *embeddedRoot;
+
     /* Require lock to get a reference on the object,
      * lockless access thereafter */
     virCaps *caps;
