@@ -292,3 +292,9 @@ virDomainDefParserConfig virCHDriverDomainDefParserConfig = {
     .domainPostParseCallback = virCHDomainDefPostParse,
     .deviceValidateCallback = chValidateDomainDeviceDef,
 };
+
+virCHMonitor *
+virCHDomainGetMonitor(virDomainObj *vm)
+{
+    return CH_DOMAIN_PRIVATE(vm)->monitor;
+}
