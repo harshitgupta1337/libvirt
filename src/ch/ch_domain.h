@@ -23,6 +23,7 @@
 #include "ch_conf.h"
 #include "ch_monitor.h"
 #include "virchrdev.h"
+#include "vircgroup.h"
 
 /* Give up waiting for mutex after 30 seconds */
 #define CH_JOB_WAIT_TIME (1000ull * 30)
@@ -52,9 +53,16 @@ typedef struct _virCHDomainObjPrivate virCHDomainObjPrivate;
 struct _virCHDomainObjPrivate {
     struct virCHDomainJobObj job;
 
-    virCHMonitor *monitor;
+    virChrdevs *chrdevs;
 
-     virChrdevs *chrdevs;
+    virCgroup *cgroup;
+
+    virCHDriver *driver;
+    virCHMonitor *monitor;
+    char *machineName;
+    virBitmap *autoNodeset;
+    virBitmap *autoCpuset;
+    virChrdevs *devs;
 };
 
 #define CH_DOMAIN_PRIVATE(vm) \
