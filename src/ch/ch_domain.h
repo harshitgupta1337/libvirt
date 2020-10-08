@@ -95,3 +95,4 @@ pid_t virCHDomainGetVcpuPid(virDomainObj *vm, unsigned int vcpuid);
 bool virCHDomainHasVcpuPids(virDomainObj *vm);
 
 char *virCHDomainGetMachineName(virDomainObj *vm);
+virDomainObj *virCHDomainObjFromDomain(virDomain *domain);

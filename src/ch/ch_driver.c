@@ -25,6 +25,7 @@
 #include "ch_driver.h"
 #include "ch_monitor.h"
 #include "ch_process.h"
+#include "ch_cgroup.h"
 #include "datatypes.h"
 #include "driver.h"
 #include "viraccessapicheck.h"
@@ -1141,6 +1142,154 @@ chDomainGetVcpus(virDomainPtr dom,
         return ret;
 }
 
+static int
+chDomainPinVcpuLive(virDomainObj *vm,
+                    virDomainDef *def,
+                    int vcpu,
+                    virCHDriver *driver,
+                    virCHDriverConfig *cfg,
+                    virBitmap *cpumap)
+{
+    virBitmap *tmpmap = NULL;
+    virDomainVcpuDef *vcpuinfo;
+    virCHDomainObjPrivate *priv = vm->privateData;
+    virCgroup *cgroup_vcpu = NULL;
+    g_autofree char *str = NULL;
+    int ret = -1;
+
+    if (!virCHDomainHasVcpuPids(vm)) {
+        virReportError(VIR_ERR_OPERATION_INVALID,
+                       "%s", _("cpu affinity is not supported"));
+        goto cleanup;
+    }
+
+    if (!(vcpuinfo = virDomainDefGetVcpu(def, vcpu))) {
+        virReportError(VIR_ERR_INVALID_ARG,
+                       _("vcpu %d is out of range of live cpu count %d"),
+                       vcpu, virDomainDefGetVcpusMax(def));
+        goto cleanup;
+    }
+
+    if (!(tmpmap = virBitmapNewCopy(cpumap)))
+        goto cleanup;
+
+    if (!(str = virBitmapFormat(cpumap)))
+        goto cleanup;
+
+    if (vcpuinfo->online) {
+        /* Configure the corresponding cpuset cgroup before set affinity. */
+        if (virCgroupHasController(priv->cgroup, VIR_CGROUP_CONTROLLER_CPUSET)) {
+            if (virCgroupNewThread(priv->cgroup, VIR_CGROUP_THREAD_VCPU, vcpu,
+                                   false, &cgroup_vcpu) < 0)
+                goto cleanup;
+            if (chSetupCgroupCpusetCpus(cgroup_vcpu, cpumap) < 0)
+                goto cleanup;
+        }
+
+        if (virProcessSetAffinity(virCHDomainGetVcpuPid(vm, vcpu), cpumap, false) < 0)
+            goto cleanup;
+    }
+
+    virBitmapFree(vcpuinfo->cpumask);
+    vcpuinfo->cpumask = tmpmap;
+    tmpmap = NULL;
+
+    if (virDomainObjSave(vm, driver->xmlopt, cfg->stateDir) < 0)
+        goto cleanup;
+
+    ret = 0;
+
+ cleanup:
+    virBitmapFree(tmpmap);
+    virCgroupFree(cgroup_vcpu);
+    return ret;
+}
+
+
+static int
+chDomainPinVcpuFlags(virDomainPtr dom,
+                     unsigned int vcpu,
+                     unsigned char *cpumap,
+                     int maplen,
+                     unsigned int flags)
+{
+    virCHDriver *driver = dom->conn->privateData;
+    virDomainObj *vm;
+    virDomainDef *def;
+    virDomainDef *persistentDef;
+    int ret = -1;
+    virBitmap *pcpumap = NULL;
+    virDomainVcpuDef *vcpuinfo = NULL;
+    g_autoptr(virCHDriverConfig) cfg = NULL;
+
+    virCheckFlags(VIR_DOMAIN_AFFECT_LIVE |
+                  VIR_DOMAIN_AFFECT_CONFIG, -1);
+
+    cfg = virCHDriverGetConfig(driver);
+
+    if (!(vm = virCHDomainObjFromDomain(dom)))
+        goto cleanup;
+
+    if (virDomainPinVcpuFlagsEnsureACL(dom->conn, vm->def, flags) < 0)
+        goto cleanup;
+
+    if (virCHDomainObjBeginJob(vm, CH_JOB_MODIFY) < 0)
+        goto cleanup;
+
+    if (virDomainObjGetDefs(vm, flags, &def, &persistentDef) < 0)
+        goto endjob;
+
+    if (persistentDef &&
+        !(vcpuinfo = virDomainDefGetVcpu(persistentDef, vcpu))) {
+        virReportError(VIR_ERR_INVALID_ARG,
+                       _("vcpu %d is out of range of persistent cpu count %d"),
+                       vcpu, virDomainDefGetVcpus(persistentDef));
+        goto endjob;
+    }
+
+    if (!(pcpumap = virBitmapNewData(cpumap, maplen)))
+        goto endjob;
+
+    if (virBitmapIsAllClear(pcpumap)) {
+        virReportError(VIR_ERR_INVALID_ARG, "%s",
+                       _("Empty cpu list for pinning"));
+        goto endjob;
+    }
+
+    if (def &&
+        chDomainPinVcpuLive(vm, def, vcpu, driver, cfg, pcpumap) < 0)
+        goto endjob;
+
+    if (persistentDef) {
+        virBitmapFree(vcpuinfo->cpumask);
+        vcpuinfo->cpumask = pcpumap;
+        pcpumap = NULL;
+
+        // ret = virDomainDefSave(persistentDef, driver->xmlopt, cfg->configDir);
+        goto endjob;
+    }
+
+    ret = 0;
+
+ endjob:
+    virCHDomainObjEndJob(vm);
+
+ cleanup:
+    virDomainObjEndAPI(&vm);
+    virBitmapFree(pcpumap);
+    return ret;
+}
+
+static int
+chDomainPinVcpu(virDomainPtr dom,
+                unsigned int vcpu,
+                unsigned char *cpumap,
+                int maplen)
+{
+    return chDomainPinVcpuFlags(dom, vcpu, cpumap, maplen,
+                                  VIR_DOMAIN_AFFECT_LIVE);
+}
+
 /* Function Tables */
 static virHypervisorDriver chHypervisorDriver = {
     .name = "CH",
@@ -1181,6 +1330,8 @@ static virHypervisorDriver chHypervisorDriver = {
     .domainGetVcpusFlags = chDomainGetVcpusFlags,           /* 7.9.0 */
     .domainGetMaxVcpus = chDomainGetMaxVcpus,               /* 7.9.0 */
     .domainGetVcpuPinInfo = chDomainGetVcpuPinInfo,         /* 7.9.0 */
+    .domainPinVcpu = chDomainPinVcpu,                       /* 7.9.0 */
+    .domainPinVcpuFlags = chDomainPinVcpuFlags,             /* 7.9.0 */
     .nodeGetCPUMap = chNodeGetCPUMap,                       /* 7.9.0 */
 };
 
