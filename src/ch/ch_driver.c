@@ -1325,6 +1325,158 @@ chDomainPinVcpu(virDomainPtr dom,
                                   VIR_DOMAIN_AFFECT_LIVE);
 }
 
+
+
+static int
+chDomainGetEmulatorPinInfo(virDomainPtr dom,
+                             unsigned char *cpumaps,
+                             int maplen,
+                             unsigned int flags)
+{
+    virDomainObjPtr vm = NULL;
+    virDomainDefPtr def;
+    virCHDomainObjPrivatePtr priv;
+    bool live;
+    int ret = -1;
+    virBitmapPtr cpumask = NULL;
+    g_autoptr(virBitmap) bitmap = NULL;
+    virBitmapPtr autoCpuset = NULL;
+
+    virCheckFlags(VIR_DOMAIN_AFFECT_LIVE |
+                  VIR_DOMAIN_AFFECT_CONFIG, -1);
+
+    if (!(vm = chDomObjFromDomain(dom)))
+        goto cleanup;
+
+    if (virDomainGetEmulatorPinInfoEnsureACL(dom->conn, vm->def) < 0)
+        goto cleanup;
+
+    if (!(def = virDomainObjGetOneDefState(vm, flags, &live)))
+        goto cleanup;
+
+    if (live) {
+        priv = vm->privateData;
+        autoCpuset = priv->autoCpuset;
+    }
+    if (def->cputune.emulatorpin) {
+        cpumask = def->cputune.emulatorpin;
+    } else if (def->cpumask) {
+        cpumask = def->cpumask;
+    } else if (vm->def->placement_mode == VIR_DOMAIN_CPU_PLACEMENT_MODE_AUTO &&
+               autoCpuset) {
+        cpumask = autoCpuset;
+    } else {
+        if (!(bitmap = virHostCPUGetAvailableCPUsBitmap()))
+            goto cleanup;
+        cpumask = bitmap;
+    }
+
+    virBitmapToDataBuf(cpumask, cpumaps, maplen);
+
+    ret = 1;
+
+ cleanup:
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
+static int
+chDomainPinEmulator(virDomainPtr dom,
+                      unsigned char *cpumap,
+                      int maplen,
+                      unsigned int flags)
+{
+    virCHDriverPtr driver = dom->conn->privateData;
+    virDomainObjPtr vm;
+    virCgroupPtr cgroup_emulator = NULL;
+    virDomainDefPtr def;
+    virDomainDefPtr persistentDef;
+    int ret = -1;
+    virCHDomainObjPrivatePtr priv;
+    virBitmapPtr pcpumap = NULL;
+    g_autoptr(virCHDriverConfig) cfg = NULL;
+    g_autofree char *str = NULL;
+    virTypedParameterPtr eventParams = NULL;
+    int eventNparams = 0;
+    int eventMaxparams = 0;
+
+    virCheckFlags(VIR_DOMAIN_AFFECT_LIVE |
+                  VIR_DOMAIN_AFFECT_CONFIG, -1);
+
+    cfg = virCHDriverGetConfig(driver);
+
+    if (!(vm = chDomObjFromDomain(dom)))
+        goto cleanup;
+
+    if (virDomainPinEmulatorEnsureACL(dom->conn, vm->def, flags) < 0)
+        goto cleanup;
+
+    if (virCHDomainObjBeginJob(vm, CH_JOB_MODIFY) < 0)
+        goto cleanup;
+
+    if (virDomainObjGetDefs(vm, flags, &def, &persistentDef) < 0)
+        goto endjob;
+
+    priv = vm->privateData;
+
+    if (!(pcpumap = virBitmapNewData(cpumap, maplen)))
+        goto endjob;
+
+    if (virBitmapIsAllClear(pcpumap)) {
+        virReportError(VIR_ERR_INVALID_ARG, "%s",
+                       _("Empty cpu list for pinning"));
+        goto endjob;
+    }
+
+    if (def) {
+        if (virCgroupHasController(priv->cgroup, VIR_CGROUP_CONTROLLER_CPUSET)) {
+            if (virCgroupNewThread(priv->cgroup, VIR_CGROUP_THREAD_EMULATOR,
+                                   0, false, &cgroup_emulator) < 0)
+                goto endjob;
+
+            if (chSetupCgroupCpusetCpus(cgroup_emulator, pcpumap) < 0) {
+                virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                               _("failed to set cpuset.cpus in cgroup"
+                                 " for emulator threads"));
+                goto endjob;
+            }
+        }
+
+        if (virProcessSetAffinity(vm->pid, pcpumap) < 0)
+            goto endjob;
+
+        virBitmapFree(def->cputune.emulatorpin);
+        def->cputune.emulatorpin = NULL;
+
+        if (!(def->cputune.emulatorpin = virBitmapNewCopy(pcpumap)))
+            goto endjob;
+
+        if (virDomainObjSave(vm, driver->xmlopt, cfg->stateDir) < 0)
+            goto endjob;
+
+        str = virBitmapFormat(pcpumap);
+        if (virTypedParamsAddString(&eventParams, &eventNparams,
+                                    &eventMaxparams,
+                                    VIR_DOMAIN_TUNABLE_CPU_EMULATORPIN,
+                                    str) < 0)
+            goto endjob;
+
+    }
+
+
+    ret = 0;
+
+ endjob:
+    virCHDomainObjEndJob(vm);
+
+ cleanup:
+    if (cgroup_emulator)
+        virCgroupFree(&cgroup_emulator);
+    virBitmapFree(pcpumap);
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
 #define CH_NB_NUMA_PARAM 2
 
 static int
@@ -1643,6 +1795,8 @@ static virHypervisorDriver chHypervisorDriver = {
     .domainGetVcpuPinInfo = chDomainGetVcpuPinInfo,         /* 6.7.0 */
     .domainPinVcpu = chDomainPinVcpu,                       /* 6.7.0 */
     .domainPinVcpuFlags = chDomainPinVcpuFlags,             /* 6.7.0 */
+    .domainPinEmulator = chDomainPinEmulator,               /* 6.7.0 */
+    .domainGetEmulatorPinInfo = chDomainGetEmulatorPinInfo, /* 6.7.0 */
     .nodeGetCPUMap = chNodeGetCPUMap,                       /* 6.7.0 */
     .domainSetNumaParameters = chDomainSetNumaParameters,   /* 6.7.0 */
     .domainGetNumaParameters = chDomainGetNumaParameters,   /* 6.7.0 */
