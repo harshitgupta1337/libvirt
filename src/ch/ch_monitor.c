@@ -25,6 +25,7 @@
 #include <curl/curl.h>
 
 #include "ch_conf.h"
+#include "ch_domain.h"
 #include "ch_monitor.h"
 #include "viralloc.h"
 #include "vircommand.h"
@@ -34,6 +35,7 @@
 #include "virlog.h"
 #include "virstring.h"
 #include "virtime.h"
+#include "ch_interface.h"
 
 #define VIR_FROM_THIS VIR_FROM_CH
 
@@ -229,13 +231,15 @@ virCHMonitorBuildDisksJson(virJSONValue *content, virDomainDef *vmdef)
 }
 
 static int
-virCHMonitorBuildNetJson(virJSONValue *nets, virDomainNetDef *netdef)
+virCHMonitorBuildNetJson(virDomainObjPtr vm, virJSONValuePtr nets, virDomainNetDefPtr netdef,
+                         size_t *nnicindexes, int **nicindexes)
 {
     virDomainNetType netType = virDomainNetGetActualType(netdef);
     char macaddr[VIR_MAC_STRING_BUFLEN];
-    virJSONValue *net;
-
-    // check net type at first
+    virCHDomainObjPrivatePtr priv = vm->privateData;
+    virJSONValuePtr net;
+    virJSONValuePtr clh_tapfds = NULL;
+    int i = 0;
     net = virJSONValueNewObject();
 
     switch (netType) {
@@ -277,8 +281,11 @@ virCHMonitorBuildNetJson(virJSONValue *nets, virDomainNetDef *netdef)
                 goto cleanup;
         }
         break;
-    case VIR_DOMAIN_NET_TYPE_BRIDGE:
     case VIR_DOMAIN_NET_TYPE_NETWORK:
+        //TAP device is created and attached to selected bridge in chProcessNetworkPrepareDevices
+        //nothing more to do here
+        break;
+    case VIR_DOMAIN_NET_TYPE_BRIDGE:
     case VIR_DOMAIN_NET_TYPE_DIRECT:
     case VIR_DOMAIN_NET_TYPE_USER:
     case VIR_DOMAIN_NET_TYPE_SERVER:
@@ -294,10 +301,14 @@ virCHMonitorBuildNetJson(virJSONValue *nets, virDomainNetDef *netdef)
         goto cleanup;
     }
 
-    if (netdef->ifname != NULL) {
-        if (virJSONValueObjectAppendString(net, "tap", netdef->ifname) < 0)
-            goto cleanup;
+    clh_tapfds = virJSONValueNewArray();
+    for (i=0; i< priv->tapfdSize; i++) {
+        virJSONValueArrayAppend(clh_tapfds, virJSONValueNewNumberUint(priv->tapfd[i]));
     }
+
+    if (virJSONValueObjectAppend(net, "fds", clh_tapfds) < 0)
+        goto cleanup;
+
     if (virJSONValueObjectAppendString(net, "mac", virMacAddrFormat(&netdef->mac, macaddr)) < 0)
         goto cleanup;
 
@@ -336,7 +347,8 @@ virCHMonitorBuildNetJson(virJSONValue *nets, virDomainNetDef *netdef)
 }
 
 static int
-virCHMonitorBuildNetsJson(virJSONValue *content, virDomainDef *vmdef)
+virCHMonitorBuildNetsJson(virDomainObjPtr vm, virJSONValuePtr content, virDomainDefPtr vmdef,
+                          size_t *nnicindexes, int **nicindexes)
 {
     virJSONValue *nets;
     size_t i;
@@ -345,7 +357,8 @@ virCHMonitorBuildNetsJson(virJSONValue *content, virDomainDef *vmdef)
         nets = virJSONValueNewArray();
 
         for (i = 0; i < vmdef->nnets; i++) {
-            if (virCHMonitorBuildNetJson(nets, vmdef->nets[i]) < 0)
+            if (virCHMonitorBuildNetJson(vm, nets, vmdef->nets[i],
+                                         nnicindexes, nicindexes) < 0)
                 goto cleanup;
         }
         if (virJSONValueObjectAppend(content, "net", &nets) < 0)
@@ -479,7 +492,8 @@ virCHMonitorDetectUnsupportedDevices(virDomainDef *vmdef)
 }
 
 static int
-virCHMonitorBuildVMJson(virDomainDef *vmdef, char **jsonstr)
+virCHMonitorBuildVMJson(virDomainObjPtr vm, virDomainDefPtr vmdef, char **jsonstr,
+                        size_t *nnicindexes, int **nicindexes)
 {
     virJSONValue *content = virJSONValueNewObject();
     int ret = -1;
@@ -505,7 +519,11 @@ virCHMonitorBuildVMJson(virDomainDef *vmdef, char **jsonstr)
     if (virCHMonitorBuildDisksJson(content, vmdef) < 0)
         goto cleanup;
 
-    if (virCHMonitorBuildNetsJson(content, vmdef) < 0)
+    if (virCHMonitorBuildNetsJson(vm, content, vmdef,
+                                  nnicindexes, nicindexes) < 0)
+        goto cleanup;
+
+    if (virCHMonitorBuildDevicesJson(content, vmdef) < 0)
         goto cleanup;
 
     if (!(*jsonstr = virJSONValueToString(content, false)))
@@ -577,10 +595,12 @@ chMonitorCreateSocket(const char *socket_path)
 virCHMonitor *
 virCHMonitorNew(virDomainObj *vm, const char *socketdir)
 {
-    virCHMonitor *ret = NULL;
-    virCHMonitor *mon = NULL;
-    virCommand *cmd = NULL;
-    int socket_fd = 0;
+    virCHMonitorPtr ret = NULL;
+    virCHMonitorPtr mon = NULL;
+    virCommandPtr cmd = NULL;
+    int i;
+    virCHDomainObjPrivatePtr priv = vm->privateData;
+    int pings = 0;
 
     if (virCHMonitorInitialize() < 0)
         return NULL;
@@ -601,6 +621,10 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
                              _("Cannot create socket directory '%s'"),
                              socketdir);
         goto cleanup;
+    }
+    for (i = 0; i < priv->tapfdSize; i++) {
+        virCommandPassFD(cmd, priv->tapfd[i],
+                         VIR_COMMAND_PASS_FD_CLOSE_PARENT);
     }
 
     cmd = virCommandNew(vm->def->emulator);
@@ -781,7 +805,8 @@ virCHMonitorCreateVM(virCHMonitor *mon)
     headers = curl_slist_append(headers, "Accept: application/json");
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    if (virCHMonitorBuildVMJson(mon->vm->def, &payload) != 0)
+    if (virCHMonitorBuildVMJson(mon->vm, mon->vm->def, &payload,
+                                nnicindexes, nicindexes) != 0)
         return -1;
 
     virObjectLock(mon);

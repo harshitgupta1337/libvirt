@@ -51,7 +51,21 @@ typedef struct _virCHDomainObjPrivate virCHDomainObjPrivate;
 struct _virCHDomainObjPrivate {
     struct virCHDomainJobObj job;
 
-    virCHMonitor *monitor;
+    virCHDriverPtr driver;
+
+    virCHMonitorPtr monitor;
+
+    virChrdevsPtr devs;
+
+    char *machineName;
+
+    virBitmapPtr autoNodeset;
+    virBitmapPtr autoCpuset;
+
+    virCgroupPtr cgroup;
+
+    size_t tapfdSize;
+    int *tapfd;
 };
 
 extern virDomainXMLPrivateDataCallbacks virCHDriverPrivateDataCallbacks;
