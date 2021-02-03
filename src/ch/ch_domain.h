@@ -68,6 +68,9 @@ struct _virCHDomainObjPrivate {
     virBitmapPtr autoCpuset;
 
     virCgroupPtr cgroup;
+
+    size_t tapfdSize;
+    int *tapfd;
 };
 
 #define CH_DOMAIN_PRIVATE(vm) \

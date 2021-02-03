@@ -22,8 +22,10 @@
 
 #include <unistd.h>
 #include <fcntl.h>
+#include "datatypes.h"
 
 #include "ch_domain.h"
+#include "ch_interface.h"
 #include "ch_monitor.h"
 #include "ch_process.h"
 #include "ch_cgroup.h"
@@ -373,6 +375,95 @@ virCHProcessSetupVcpus(virDomainObjPtr vm)
 }
 
 /**
+ * chProcessNetworkPrepareDevices
+ */
+static int
+chProcessNetworkPrepareDevices(virCHDriverPtr driver, virDomainObjPtr vm)
+{
+    virDomainDefPtr def = vm->def;
+    size_t i;
+    virCHDomainObjPrivatePtr priv = vm->privateData;
+    g_autoptr(virConnect) conn = NULL;
+    char **tapfdName = NULL;
+    int *tapfd = NULL;
+    size_t tapfdSize = 0;
+
+    for (i = 0; i < def->nnets; i++) {
+        virDomainNetDefPtr net = def->nets[i];
+        virDomainNetType actualType;
+
+        /* If appropriate, grab a physical device from the configured
+         * network's pool of devices, or resolve bridge device name
+         * to the one defined in the network definition.
+         */
+        if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
+            if (!conn && !(conn = virGetConnectNetwork())){
+                return -1;}
+            if (virDomainNetAllocateActualDevice(conn, def, net) < 0){
+                return -1;}
+        }
+
+        actualType = virDomainNetGetActualType(net);
+        if (actualType == VIR_DOMAIN_NET_TYPE_HOSTDEV &&
+            net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
+            /* Each type='hostdev' network device must also have a
+             * corresponding entry in the hostdevs array. For netdevs
+             * that are hardcoded as type='hostdev', this is already
+             * done by the parser, but for those allocated from a
+             * network / determined at runtime, we need to do it
+             * separately.
+             */
+            virDomainHostdevDefPtr hostdev = virDomainNetGetActualHostdev(net);
+            virDomainHostdevSubsysPCIPtr pcisrc = &hostdev->source.subsys.u.pci;
+
+            if (virDomainHostdevFind(def, hostdev, NULL) >= 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("PCI device %04x:%02x:%02x.%x "
+                                 "allocated from network %s is already "
+                                 "in use by domain %s"),
+                               pcisrc->addr.domain, pcisrc->addr.bus,
+                               pcisrc->addr.slot, pcisrc->addr.function,
+                               net->data.network.name, def->name);
+                return -1;
+            }
+            if (virDomainHostdevInsert(def, hostdev) < 0)
+                return -1;
+        } else if (actualType == VIR_DOMAIN_NET_TYPE_USER ) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+              _("VIR_DOMAIN_NET_TYPE_USER is not a supported Network type"));
+         } else if (actualType == VIR_DOMAIN_NET_TYPE_NETWORK ) {
+            tapfdSize = net->driver.virtio.queues;
+            if (!tapfdSize)
+                tapfdSize = 2; //This needs to be at least 2, based on
+                // https://github.com/cloud-hypervisor/cloud-hypervisor/blob/master/docs/networking.md
+
+            if (VIR_ALLOC_N(tapfd, tapfdSize) < 0 ||
+                VIR_ALLOC_N(tapfdName, tapfdSize) < 0)
+                goto cleanup;
+
+            memset(tapfd, -1, tapfdSize * sizeof(tapfd[0]));
+
+            if (chInterfaceBridgeConnect(def, driver,  net,
+                                       tapfd, &tapfdSize) < 0)
+                goto cleanup;
+
+            // Store tap information in Private Data
+            // This info will be used while generating Network Json
+            priv->tapfd = g_steal_pointer(&tapfd);
+            priv->tapfdSize = tapfdSize;
+         }
+    }
+
+return 0;
+
+cleanup:
+    VIR_FREE(tapfd);
+    VIR_FREE(tapfdName);
+    return 0;
+}
+
+
+/**
  * virCHProcessStart:
  * @driver: pointer to driver structure
  * @vm: pointer to virtual machine structure
@@ -390,6 +481,14 @@ int virCHProcessStart(virCHDriverPtr driver,
     g_autofree int *nicindexes = NULL;
     size_t nnicindexes = 0;
     int ret = -1;
+
+    /* network devices must be "prepared" before hostdevs, because
+     * setting up a network device might create a new hostdev that
+     * will need to be setup.
+     */
+    VIR_DEBUG("Preparing network devices");
+    if (chProcessNetworkPrepareDevices(driver, vm) < 0)
+        goto cleanup;
 
     if (!priv->monitor) {
         /* And we can get the first monitor connection now too */

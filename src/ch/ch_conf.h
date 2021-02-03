@@ -22,6 +22,7 @@
 
 #include "virdomainobjlist.h"
 #include "virthread.h"
+#include "virebtables.h"
 
 #define CH_DRIVER_NAME "CH"
 #define CH_CMD "cloud-hypervisor"
@@ -42,6 +43,8 @@ struct _virCHDriverConfig {
     char *logDir;
 
     int cgroupControllers;
+
+    bool macFilter;
 };
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(virCHDriverConfig, virObjectUnref);
@@ -71,6 +74,9 @@ struct _virCHDriver
     /* Require lock to get reference on 'config',
      * then lockless thereafter */
     virCHDriverConfigPtr config;
+
+    /* Immutable pointer, lockless APIs. Pointless abstraction */
+    ebtablesContext *ebtables;
 
     /* pid file FD, ensures two copies of the driver can't use the same root */
     int lockFD;

@@ -11,6 +11,8 @@ ch_driver_sources = [
   'ch_monitor.h',
   'ch_process.c',
   'ch_process.h',
+  'ch_interface.c',
+  'ch_interface.h',
 ]
 
 driver_source_files += files(ch_driver_sources)
