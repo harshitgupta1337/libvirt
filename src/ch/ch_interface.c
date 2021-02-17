@@ -57,7 +57,7 @@ chInterfaceBridgeConnect(virDomainDefPtr def,
     if (!net->ifname ||
         STRPREFIX(net->ifname, VIR_NET_GENERATED_TAP_PREFIX) ||
         strchr(net->ifname, '%')) {
-        VIR_FREE(net->ifname);
+        g_free(net->ifname);
         net->ifname = g_strdup(VIR_NET_GENERATED_TAP_PREFIX "%d");
         /* avoid exposing vnet%d in getXMLDesc or error outputs */
         template_ifname = true;
@@ -92,6 +92,9 @@ chInterfaceBridgeConnect(virDomainDefPtr def,
                 goto cleanup;
         }
     } else {
+            /*
+             *  Supporting non-privileged mode, session mode not supported
+             */
             virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
                            _("Cannot connect to bridge in session mode"));
             goto cleanup;
@@ -118,7 +121,7 @@ chInterfaceBridgeConnect(virDomainDefPtr def,
         for (i = 0; i < *tapfdSize && tapfd[i] >= 0; i++)
             VIR_FORCE_CLOSE(tapfd[i]);
         if (template_ifname)
-            VIR_FREE(net->ifname);
+            g_free(net->ifname);
     }
     virObjectUnref(cfg);
 

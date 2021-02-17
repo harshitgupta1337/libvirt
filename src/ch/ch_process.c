@@ -384,7 +384,6 @@ chProcessNetworkPrepareDevices(virCHDriverPtr driver, virDomainObjPtr vm)
     size_t i;
     virCHDomainObjPrivatePtr priv = vm->privateData;
     g_autoptr(virConnect) conn = NULL;
-    char **tapfdName = NULL;
     int *tapfd = NULL;
     size_t tapfdSize = 0;
 
@@ -397,10 +396,12 @@ chProcessNetworkPrepareDevices(virCHDriverPtr driver, virDomainObjPtr vm)
          * to the one defined in the network definition.
          */
         if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
-            if (!conn && !(conn = virGetConnectNetwork())){
-                return -1;}
-            if (virDomainNetAllocateActualDevice(conn, def, net) < 0){
-                return -1;}
+            if (!conn && !(conn = virGetConnectNetwork())) {
+                return -1;
+            }
+            if (virDomainNetAllocateActualDevice(conn, def, net) < 0) {
+                return -1;
+            }
         }
 
         actualType = virDomainNetGetActualType(net);
@@ -437,9 +438,7 @@ chProcessNetworkPrepareDevices(virCHDriverPtr driver, virDomainObjPtr vm)
                 tapfdSize = 2; //This needs to be at least 2, based on
                 // https://github.com/cloud-hypervisor/cloud-hypervisor/blob/master/docs/networking.md
 
-            if (VIR_ALLOC_N(tapfd, tapfdSize) < 0 ||
-                VIR_ALLOC_N(tapfdName, tapfdSize) < 0)
-                goto cleanup;
+            tapfd = g_new(int, tapfdSize);
 
             memset(tapfd, -1, tapfdSize * sizeof(tapfd[0]));
 
@@ -454,11 +453,10 @@ chProcessNetworkPrepareDevices(virCHDriverPtr driver, virDomainObjPtr vm)
          }
     }
 
-return 0;
+    return 0;
 
-cleanup:
-    VIR_FREE(tapfd);
-    VIR_FREE(tapfdName);
+    cleanup:
+        g_free(tapfd);
     return 0;
 }
 
