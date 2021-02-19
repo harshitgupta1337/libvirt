@@ -21,6 +21,7 @@
 #pragma once
 
 #include "virdomainobjlist.h"
+#include "virhostdev.h"
 #include "virthread.h"
 #include "ch_capabilities.h"
 #include "virebtables.h"
@@ -84,6 +85,9 @@ struct _virCHDriver
 
     /* Immutable pointer, lockless APIs. Pointless abstraction */
     ebtablesContext *ebtables;
+
+    /* Immutable pointer to host device manager */
+    virHostdevManager *hostdevMgr;
 };
 
 #define CH_SAVE_MAGIC "libvirt-xml\n \0 \r"
