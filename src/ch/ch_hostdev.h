@@ -22,3 +22,105 @@
 
 #include "ch_conf.h"
 #include "domain_conf.h"
+
+bool
+chHostdevHostSupportsPassthroughVFIO(void);
+
+bool
+chHostdevNeedsVFIO(const virDomainHostdevDef *hostdev);
+
+int
+chHostdevPrepareNVMeDisks(virCHDriver *driver,
+                          const char *name,
+                          virDomainDiskDef **disks,
+                          size_t ndisks);
+
+int
+chHostdevPreparePCIDevices(virCHDriver *driver,
+                           const char *name,
+                           const unsigned char *uuid,
+                           virDomainHostdevDef **hostdevs,
+                           int nhostdevs,
+                           unsigned int flags);
+
+int
+chHostdevPrepareUSBDevices(virCHDriver *driver,
+                           const char *name,
+                           virDomainHostdevDef **hostdevs,
+                           int nhostdevs,
+                           unsigned int flags);
+
+
+int
+chHostdevPrepareUSBDevices(virCHDriver *driver,
+                           const char *name,
+                           virDomainHostdevDef **hostdevs,
+                           int nhostdevs,
+                           unsigned int flags);
+
+int
+chHostdevPrepareSCSIDevices(virCHDriver *driver,
+                            const char *name,
+                            virDomainHostdevDef **hostdevs,
+                            int nhostdevs);
+
+int
+chHostdevPrepareSCSIVHostDevices(virCHDriver *driver,
+                                 const char *name,
+                                 virDomainHostdevDef **hostdevs,
+                                 int nhostdevs);
+
+int
+chHostdevPrepareMediatedDevices(virCHDriver *driver,
+                                const char *name,
+                                virDomainHostdevDef **hostdevs,
+                                int nhostdevs);
+int
+chHostdevPrepareDomainDevices(virCHDriver *driver,
+                              virDomainDef *def,
+                              unsigned int flags);
+
+void
+chHostdevReAttachOneNVMeDisk(virCHDriver *driver,
+                             const char *name,
+                             virStorageSource *src);
+
+void
+chHostdevReAttachNVMeDisks(virCHDriver *driver,
+                           const char *name,
+                           virDomainDiskDef **disks,
+                           size_t ndisks);
+
+void
+chHostdevReAttachPCIDevices(virCHDriver *driver,
+                            const char *name,
+                            virDomainHostdevDef **hostdevs,
+                            int nhostdevs);
+
+void
+chHostdevReAttachUSBDevices(virCHDriver *driver,
+                            const char *name,
+                            virDomainHostdevDef **hostdevs,
+                            int nhostdevs);
+
+void
+chHostdevReAttachSCSIDevices(virCHDriver *driver,
+                             const char *name,
+                             virDomainHostdevDef **hostdevs,
+                             int nhostdevs);
+
+void
+chHostdevReAttachSCSIVHostDevices(virCHDriver *driver,
+                                    const char *name,
+                                    virDomainHostdevDef **hostdevs,
+                                    int nhostdevs);
+
+void
+chHostdevReAttachMediatedDevices(virCHDriver *driver,
+                                 const char *name,
+                                 virDomainHostdevDef **hostdevs,
+                                 int nhostdevs);
+
+void
+chHostdevReAttachDomainDevices(virCHDriver *driver,
+                               virDomainDef *def);
