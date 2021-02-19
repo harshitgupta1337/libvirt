@@ -29,6 +29,9 @@
 #include "ch_monitor.h"
 #include "ch_process.h"
 #include "domain_cgroup.h"
+#include "ch_hostdev.h"
+#include "virnuma.h"
+#include "viralloc.h"
 #include "virerror.h"
 #include "virjson.h"
 #include "virlog.h"
@@ -592,6 +595,10 @@ virCHProcessStart(virCHDriver *driver,
     /* Bring up netdevs before starting CPUs */
     if (chInterfaceStartDevices(vm->def) < 0)
        return -1;
+    VIR_DEBUG("Preparing host devices");
+    if (chHostdevPrepareDomainDevices(driver, vm->def,
+                                      VIR_HOSTDEV_COLD_BOOT) < 0)
+        goto cleanup;
 
     if (!priv->monitor) {
         /* And we can get the first monitor connection now too */
@@ -677,6 +684,8 @@ virCHProcessStop(virCHDriver *driver G_GNUC_UNUSED,
     if (priv->monitor) {
         g_clear_pointer(&priv->monitor, virCHMonitorClose);
     }
+
+    chHostdevReAttachDomainDevices(driver, vm->def);
 
  retry:
     if ((ret = virDomainCgroupRemoveCgroup(vm,
