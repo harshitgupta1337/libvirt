@@ -693,7 +693,7 @@ void virCHMonitorClose(virCHMonitor *mon)
 
     if (mon->pid > 0) {
         /* try cleaning up the Cloud-Hypervisor process */
-        virProcessAbort(mon->pid);
+        virProcessKillPainfully(mon->pid, true);
         mon->pid = 0;
     }
 
