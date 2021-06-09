@@ -371,6 +371,7 @@ virCHMonitorBuildNetJson(virDomainObjPtr vm, virJSONValuePtr nets, virDomainNetD
         //nothing more to do here
         break;
     case VIR_DOMAIN_NET_TYPE_BRIDGE:
+        break;
     case VIR_DOMAIN_NET_TYPE_DIRECT:
     case VIR_DOMAIN_NET_TYPE_USER:
     case VIR_DOMAIN_NET_TYPE_SERVER:

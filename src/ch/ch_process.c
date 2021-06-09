@@ -589,7 +589,7 @@ chProcessNetworkPrepareDevices(virCHDriverPtr driver, virDomainObjPtr vm)
         } else if (actualType == VIR_DOMAIN_NET_TYPE_USER ) {
             virReportError(VIR_ERR_INTERNAL_ERROR,
               _("VIR_DOMAIN_NET_TYPE_USER is not a supported Network type"));
-        } else if (actualType == VIR_DOMAIN_NET_TYPE_NETWORK) {
+        } else if (actualType == VIR_DOMAIN_NET_TYPE_NETWORK || actualType == VIR_DOMAIN_NET_TYPE_BRIDGE ) {
             tapfdSize = net->driver.virtio.queues;
             if (!tapfdSize)
                 tapfdSize = 1;
