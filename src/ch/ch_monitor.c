@@ -20,12 +20,13 @@
 
 #include <config.h>
 
+#include <curl/curl.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <curl/curl.h>
 
 #include "ch_conf.h"
 #include "ch_domain.h"
+#include "ch_interface.h"
 #include "ch_monitor.h"
 #include "viralloc.h"
 #include "vircommand.h"
@@ -35,7 +36,6 @@
 #include "virlog.h"
 #include "virstring.h"
 #include "virtime.h"
-#include "ch_interface.h"
 
 #define VIR_FROM_THIS VIR_FROM_CH
 
@@ -44,12 +44,11 @@ VIR_LOG_INIT("ch.ch_monitor");
 static virClass *virCHMonitorClass;
 static void virCHMonitorDispose(void *obj);
 
-static int virCHMonitorOnceInit(void)
-{
-    if (!VIR_CLASS_NEW(virCHMonitor, virClassForObjectLockable()))
-        return -1;
+static int virCHMonitorOnceInit(void) {
+  if (!VIR_CLASS_NEW(virCHMonitor, virClassForObjectLockable()))
+    return -1;
 
-    return 0;
+  return 0;
 }
 
 VIR_ONCE_GLOBAL_INIT(virCHMonitor);
@@ -58,805 +57,767 @@ int virCHMonitorShutdownVMM(virCHMonitor *mon);
 int virCHMonitorPutNoContent(virCHMonitor *mon, const char *endpoint);
 int virCHMonitorGet(virCHMonitor *mon, const char *endpoint);
 
-static int
-virCHMonitorBuildCPUJson(virJSONValue *content, virDomainDef *vmdef)
-{
-    virJSONValue *cpus;
-    unsigned int maxvcpus = 0;
-    unsigned int nvcpus = 0;
-    virDomainVcpuDef *vcpu;
-    size_t i;
+static int virCHMonitorBuildCPUJson(virJSONValue *content,
+                                    virDomainDef *vmdef) {
+  virJSONValue *cpus;
+  unsigned int maxvcpus = 0;
+  unsigned int nvcpus = 0;
+  virDomainVcpuDef *vcpu;
+  size_t i;
 
-    /* count maximum allowed number vcpus and enabled vcpus when boot.*/
-    maxvcpus = virDomainDefGetVcpusMax(vmdef);
-    for (i = 0; i < maxvcpus; i++) {
-        vcpu = virDomainDefGetVcpu(vmdef, i);
-        if (vcpu->online)
-            nvcpus++;
-    }
+  /* count maximum allowed number vcpus and enabled vcpus when boot.*/
+  maxvcpus = virDomainDefGetVcpusMax(vmdef);
+  for (i = 0; i < maxvcpus; i++) {
+    vcpu = virDomainDefGetVcpu(vmdef, i);
+    if (vcpu->online)
+      nvcpus++;
+  }
 
-    if (maxvcpus != 0 || nvcpus != 0) {
-        cpus = virJSONValueNewObject();
-        if (virJSONValueObjectAppendNumberInt(cpus, "boot_vcpus", nvcpus) < 0)
-            goto cleanup;
-        if (virJSONValueObjectAppendNumberInt(cpus, "max_vcpus", vmdef->maxvcpus) < 0)
-            goto cleanup;
-        if (virJSONValueObjectAppend(content, "cpus", &cpus) < 0)
-            goto cleanup;
-    }
+  if (maxvcpus != 0 || nvcpus != 0) {
+    cpus = virJSONValueNewObject();
+    if (virJSONValueObjectAppendNumberInt(cpus, "boot_vcpus", nvcpus) < 0)
+      goto cleanup;
+    if (virJSONValueObjectAppendNumberInt(cpus, "max_vcpus", vmdef->maxvcpus) <
+        0)
+      goto cleanup;
+    if (virJSONValueObjectAppend(content, "cpus", &cpus) < 0)
+      goto cleanup;
+  }
 
-    return 0;
+  return 0;
 
- cleanup:
-    virJSONValueFree(cpus);
-    return -1;
+cleanup:
+  virJSONValueFree(cpus);
+  return -1;
 }
 
-static int
-virCHMonitorBuildKernelRelatedJson(virJSONValue *content, virDomainDef *vmdef)
-{
-    virJSONValue *kernel = virJSONValueNewObject();
-    virJSONValue *cmdline = virJSONValueNewObject();
-    virJSONValue *initramfs = virJSONValueNewObject();
+static int virCHMonitorBuildKernelRelatedJson(virJSONValue *content,
+                                              virDomainDef *vmdef) {
+  virJSONValue *kernel = virJSONValueNewObject();
+  virJSONValue *cmdline = virJSONValueNewObject();
+  virJSONValue *initramfs = virJSONValueNewObject();
 
-    if (vmdef->os.kernel == NULL) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Kernel image path in this domain is not defined"));
-        goto cleanup;
-    } else {
-        kernel = virJSONValueNewObject();
-        if (virJSONValueObjectAppendString(kernel, "path", vmdef->os.kernel) < 0)
-            goto cleanup;
-        if (virJSONValueObjectAppend(content, "kernel", &kernel) < 0)
-            goto cleanup;
-    }
+  if (vmdef->os.kernel == NULL) {
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("Kernel image path in this domain is not defined"));
+    goto cleanup;
+  } else {
+    kernel = virJSONValueNewObject();
+    if (virJSONValueObjectAppendString(kernel, "path", vmdef->os.kernel) < 0)
+      goto cleanup;
+    if (virJSONValueObjectAppend(content, "kernel", &kernel) < 0)
+      goto cleanup;
+  }
 
-    if (vmdef->os.cmdline) {
-        if (virJSONValueObjectAppendString(cmdline, "args", vmdef->os.cmdline) < 0)
-            goto cleanup;
-        if (virJSONValueObjectAppend(content, "cmdline", &cmdline) < 0)
-            goto cleanup;
-    }
+  if (vmdef->os.cmdline) {
+    if (virJSONValueObjectAppendString(cmdline, "args", vmdef->os.cmdline) < 0)
+      goto cleanup;
+    if (virJSONValueObjectAppend(content, "cmdline", &cmdline) < 0)
+      goto cleanup;
+  }
 
-    if (vmdef->os.initrd != NULL) {
-        initramfs = virJSONValueNewObject();
-        if (virJSONValueObjectAppendString(initramfs, "path", vmdef->os.initrd) < 0)
-            goto cleanup;
-        if (virJSONValueObjectAppend(content, "initramfs", &initramfs) < 0)
-            goto cleanup;
-    }
+  if (vmdef->os.initrd != NULL) {
+    initramfs = virJSONValueNewObject();
+    if (virJSONValueObjectAppendString(initramfs, "path", vmdef->os.initrd) < 0)
+      goto cleanup;
+    if (virJSONValueObjectAppend(content, "initramfs", &initramfs) < 0)
+      goto cleanup;
+  }
 
-    return 0;
+  return 0;
 
- cleanup:
-    virJSONValueFree(kernel);
-    virJSONValueFree(cmdline);
-    virJSONValueFree(initramfs);
+cleanup:
+  virJSONValueFree(kernel);
+  virJSONValueFree(cmdline);
+  virJSONValueFree(initramfs);
 
-    return -1;
+  return -1;
 }
 
-static int
-virCHMonitorBuildMemoryJson(virJSONValue *content, virDomainDef *vmdef)
-{
-    virJSONValue *memory;
-    unsigned long long total_memory = virDomainDefGetMemoryInitial(vmdef) * 1024;
+static int virCHMonitorBuildMemoryJson(virJSONValue *content,
+                                       virDomainDef *vmdef) {
+  virJSONValue *memory;
+  unsigned long long total_memory = virDomainDefGetMemoryInitial(vmdef) * 1024;
 
-    if (total_memory != 0) {
-        memory = virJSONValueNewObject();
-        if (virJSONValueObjectAppendNumberUlong(memory, "size", total_memory) < 0)
-            goto cleanup;
-        if (virJSONValueObjectAppend(content, "memory", &memory) < 0)
-            goto cleanup;
-    }
+  if (total_memory != 0) {
+    memory = virJSONValueNewObject();
+    if (virJSONValueObjectAppendNumberUlong(memory, "size", total_memory) < 0)
+      goto cleanup;
+    if (virJSONValueObjectAppend(content, "memory", &memory) < 0)
+      goto cleanup;
+  }
 
-    return 0;
+  return 0;
 
- cleanup:
-    virJSONValueFree(memory);
-    return -1;
+cleanup:
+  virJSONValueFree(memory);
+  return -1;
 }
 
-static int
-virCHMonitorBuildDiskJson(virJSONValue *disks, virDomainDiskDef *diskdef)
-{
-    virJSONValue *disk = virJSONValueNewObject();
+static int virCHMonitorBuildDiskJson(virJSONValue *disks,
+                                     virDomainDiskDef *diskdef) {
+  virJSONValue *disk = virJSONValueNewObject();
 
-    if (!diskdef->src)
-        goto cleanup;
+  if (!diskdef->src)
+    goto cleanup;
 
-    switch (diskdef->src->type) {
-    case VIR_STORAGE_TYPE_FILE:
-        if (!diskdef->src->path) {
-            virReportError(VIR_ERR_INVALID_ARG, "%s",
-                           _("Missing disk file path in domain"));
-            goto cleanup;
-        }
-        if (diskdef->bus != VIR_DOMAIN_DISK_BUS_VIRTIO) {
-            virReportError(VIR_ERR_INVALID_ARG,
-                           _("Only virtio bus types are supported for '%s'"), diskdef->src->path);
-            goto cleanup;
-        }
-        if (virJSONValueObjectAppendString(disk, "path", diskdef->src->path) < 0)
-            goto cleanup;
-        if (diskdef->src->readonly) {
-            if (virJSONValueObjectAppendBoolean(disk, "readonly", true) < 0)
-                goto cleanup;
-        }
-        if (virJSONValueArrayAppend(disks, &disk) < 0)
-            goto cleanup;
-
-        break;
-    case VIR_STORAGE_TYPE_NONE:
-    case VIR_STORAGE_TYPE_BLOCK:
-    case VIR_STORAGE_TYPE_DIR:
-    case VIR_STORAGE_TYPE_NETWORK:
-    case VIR_STORAGE_TYPE_VOLUME:
-    case VIR_STORAGE_TYPE_NVME:
-    case VIR_STORAGE_TYPE_VHOST_USER:
-    default:
-        virReportEnumRangeError(virStorageType, diskdef->src->type);
+  switch (diskdef->src->type) {
+  case VIR_STORAGE_TYPE_FILE:
+    if (!diskdef->src->path) {
+      virReportError(VIR_ERR_INVALID_ARG, "%s",
+                     _("Missing disk file path in domain"));
+      goto cleanup;
+    }
+    if (diskdef->bus != VIR_DOMAIN_DISK_BUS_VIRTIO) {
+      virReportError(VIR_ERR_INVALID_ARG,
+                     _("Only virtio bus types are supported for '%s'"),
+                     diskdef->src->path);
+      goto cleanup;
+    }
+    if (virJSONValueObjectAppendString(disk, "path", diskdef->src->path) < 0)
+      goto cleanup;
+    if (diskdef->src->readonly) {
+      if (virJSONValueObjectAppendBoolean(disk, "readonly", true) < 0)
         goto cleanup;
     }
+    if (virJSONValueArrayAppend(disks, &disk) < 0)
+      goto cleanup;
 
-    return 0;
+    break;
+  case VIR_STORAGE_TYPE_NONE:
+  case VIR_STORAGE_TYPE_BLOCK:
+  case VIR_STORAGE_TYPE_DIR:
+  case VIR_STORAGE_TYPE_NETWORK:
+  case VIR_STORAGE_TYPE_VOLUME:
+  case VIR_STORAGE_TYPE_NVME:
+  case VIR_STORAGE_TYPE_VHOST_USER:
+  default:
+    virReportEnumRangeError(virStorageType, diskdef->src->type);
+    goto cleanup;
+  }
 
- cleanup:
-    virJSONValueFree(disk);
-    return -1;
+  return 0;
+
+cleanup:
+  virJSONValueFree(disk);
+  return -1;
 }
 
-static int
-virCHMonitorBuildDisksJson(virJSONValue *content, virDomainDef *vmdef)
-{
-    virJSONValue *disks;
-    size_t i;
+static int virCHMonitorBuildDisksJson(virJSONValue *content,
+                                      virDomainDef *vmdef) {
+  virJSONValue *disks;
+  size_t i;
 
-    if (vmdef->ndisks > 0) {
-        disks = virJSONValueNewArray();
+  if (vmdef->ndisks > 0) {
+    disks = virJSONValueNewArray();
 
-        for (i = 0; i < vmdef->ndisks; i++) {
-            if (virCHMonitorBuildDiskJson(disks, vmdef->disks[i]) < 0)
-                goto cleanup;
-        }
-        if (virJSONValueObjectAppend(content, "disks", &disks) < 0)
-            goto cleanup;
+    for (i = 0; i < vmdef->ndisks; i++) {
+      if (virCHMonitorBuildDiskJson(disks, vmdef->disks[i]) < 0)
+        goto cleanup;
     }
+    if (virJSONValueObjectAppend(content, "disks", &disks) < 0)
+      goto cleanup;
+  }
 
-    return 0;
+  return 0;
 
- cleanup:
-    virJSONValueFree(disks);
-    return -1;
+cleanup:
+  virJSONValueFree(disks);
+  return -1;
 }
 
-static int
-virCHMonitorBuildNetJson(virDomainObjPtr vm, virJSONValuePtr nets, virDomainNetDefPtr netdef,
-                         size_t *nnicindexes, int **nicindexes)
-{
-    virDomainNetType netType = virDomainNetGetActualType(netdef);
-    char macaddr[VIR_MAC_STRING_BUFLEN];
-    virCHDomainObjPrivatePtr priv = vm->privateData;
-    virJSONValuePtr net;
-    virJSONValuePtr clh_tapfds = NULL;
-    int i = 0;
-    net = virJSONValueNewObject();
+static int virCHMonitorBuildNetJson(virDomainObj *vm, virJSONValue *nets,
+                                    virDomainNetDef *netdef,
+                                    size_t *nnicindexes, int **nicindexes) {
+  virDomainNetType netType = virDomainNetGetActualType(netdef);
+  char macaddr[VIR_MAC_STRING_BUFLEN];
+  virCHDomainObjPrivate *priv = vm->privateData;
+  virJSONValue *net;
+  virJSONValue *clh_tapfds = NULL;
+  int i = 0;
+  net = virJSONValueNewObject();
 
-    switch (netType) {
-    case VIR_DOMAIN_NET_TYPE_ETHERNET:
-        if (netdef->guestIP.nips == 1) {
-            const virNetDevIPAddr *ip = netdef->guestIP.ips[0];
-            g_autofree char *addr = NULL;
-            virSocketAddr netmask;
-            g_autofree char *netmaskStr = NULL;
-            if (!(addr = virSocketAddrFormat(&ip->address)))
-                goto cleanup;
-            if (virJSONValueObjectAppendString(net, "ip", addr) < 0)
-                goto cleanup;
-
-            if (virSocketAddrPrefixToNetmask(ip->prefix, &netmask, AF_INET) < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR,
-                               _("Failed to translate net prefix %d to netmask"),
-                               ip->prefix);
-                goto cleanup;
-            }
-            if (!(netmaskStr = virSocketAddrFormat(&netmask)))
-                goto cleanup;
-            if (virJSONValueObjectAppendString(net, "mask", netmaskStr) < 0)
-                goto cleanup;
-        } else if (netdef->guestIP.nips > 1) {
-            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                           _("ethernet type supports a single guest ip"));
-        }
-        break;
-    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
-        if ((virDomainChrType)netdef->data.vhostuser->type != VIR_DOMAIN_CHR_TYPE_UNIX) {
-            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                           _("vhost_user type support UNIX socket in this CH"));
-            goto cleanup;
-        } else {
-            if (virJSONValueObjectAppendString(net, "vhost_socket", netdef->data.vhostuser->data.nix.path) < 0)
-                goto cleanup;
-            if (virJSONValueObjectAppendBoolean(net, "vhost_user", true) < 0)
-                goto cleanup;
-        }
-        break;
-    case VIR_DOMAIN_NET_TYPE_NETWORK:
-        //TAP device is created and attached to selected bridge in chProcessNetworkPrepareDevices
-        //nothing more to do here
-        break;
-    case VIR_DOMAIN_NET_TYPE_BRIDGE:
-    case VIR_DOMAIN_NET_TYPE_DIRECT:
-    case VIR_DOMAIN_NET_TYPE_USER:
-    case VIR_DOMAIN_NET_TYPE_SERVER:
-    case VIR_DOMAIN_NET_TYPE_CLIENT:
-    case VIR_DOMAIN_NET_TYPE_MCAST:
-    case VIR_DOMAIN_NET_TYPE_INTERNAL:
-    case VIR_DOMAIN_NET_TYPE_HOSTDEV:
-    case VIR_DOMAIN_NET_TYPE_UDP:
-    case VIR_DOMAIN_NET_TYPE_VDPA:
-    case VIR_DOMAIN_NET_TYPE_LAST:
-    default:
-        virReportEnumRangeError(virDomainNetType, netType);
+  switch (netType) {
+  case VIR_DOMAIN_NET_TYPE_ETHERNET:
+    if (netdef->guestIP.nips == 1) {
+      const virNetDevIPAddr *ip = netdef->guestIP.ips[0];
+      g_autofree char *addr = NULL;
+      virSocketAddr netmask;
+      g_autofree char *netmaskStr = NULL;
+      if (!(addr = virSocketAddrFormat(&ip->address)))
         goto cleanup;
-    }
-
-    clh_tapfds = virJSONValueNewArray();
-    for (i=0; i< priv->tapfdSize; i++) {
-        virJSONValueArrayAppend(clh_tapfds, virJSONValueNewNumberUint(priv->tapfd[i]));
-    }
-
-    if (virJSONValueObjectAppend(net, "fds", clh_tapfds) < 0)
+      if (virJSONValueObjectAppendString(net, "ip", addr) < 0)
         goto cleanup;
 
-    if (virJSONValueObjectAppendString(net, "mac", virMacAddrFormat(&netdef->mac, macaddr)) < 0)
-        goto cleanup;
-
-
-    if (netdef->virtio != NULL) {
-        if (netdef->virtio->iommu == VIR_TRISTATE_SWITCH_ON) {
-            if (virJSONValueObjectAppendBoolean(net, "iommu", true) < 0)
-                goto cleanup;
-        }
-    }
-    if (netdef->driver.virtio.queues) {
-        if (virJSONValueObjectAppendNumberInt(net, "num_queues", netdef->driver.virtio.queues) < 0)
-            goto cleanup;
-    }
-
-    if (netdef->driver.virtio.rx_queue_size || netdef->driver.virtio.tx_queue_size) {
-        if (netdef->driver.virtio.rx_queue_size != netdef->driver.virtio.tx_queue_size) {
-            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-               _("virtio rx_queue_size option %d is not same with tx_queue_size %d"),
-               netdef->driver.virtio.rx_queue_size,
-               netdef->driver.virtio.tx_queue_size);
-            goto cleanup;
-        }
-        if (virJSONValueObjectAppendNumberInt(net, "queue_size", netdef->driver.virtio.rx_queue_size) < 0)
-            goto cleanup;
-    }
-
-    if (virJSONValueArrayAppend(nets, &net) < 0)
-        goto cleanup;
-
-    return 0;
-
- cleanup:
-    virJSONValueFree(net);
-    return -1;
-}
-
-static int
-virCHMonitorBuildNetsJson(virDomainObjPtr vm, virJSONValuePtr content, virDomainDefPtr vmdef,
-                          size_t *nnicindexes, int **nicindexes)
-{
-    virJSONValue *nets;
-    size_t i;
-
-    if (vmdef->nnets > 0) {
-        nets = virJSONValueNewArray();
-
-        for (i = 0; i < vmdef->nnets; i++) {
-            if (virCHMonitorBuildNetJson(vm, nets, vmdef->nets[i],
-                                         nnicindexes, nicindexes) < 0)
-                goto cleanup;
-        }
-        if (virJSONValueObjectAppend(content, "net", &nets) < 0)
-            goto cleanup;
-    }
-
-    return 0;
-
- cleanup:
-    virJSONValueFree(nets);
-    return -1;
-}
-
-static int
-virCHMonitorDetectUnsupportedDevices(virDomainDef *vmdef)
-{
-    int ret = 0;
-
-    if (vmdef->ngraphics > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support graphics"));
-        ret = 1;
-    }
-    if (vmdef->ncontrollers > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support controllers"));
-        ret = 1;
-    }
-    if (vmdef->nfss > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support fss"));
-        ret = 1;
-    }
-    if (vmdef->ninputs > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support inputs"));
-        ret = 1;
-    }
-    if (vmdef->nsounds > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support sounds"));
-        ret = 1;
-    }
-    if (vmdef->naudios > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support audios"));
-        ret = 1;
-    }
-    if (vmdef->nvideos > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support videos"));
-        ret = 1;
-    }
-    if (vmdef->nhostdevs > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support hostdevs"));
-        ret = 1;
-    }
-    if (vmdef->nredirdevs > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support redirdevs"));
-        ret = 1;
-    }
-    if (vmdef->nsmartcards > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support smartcards"));
-        ret = 1;
-    }
-    if (vmdef->nserials > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support serials"));
-        ret = 1;
-    }
-    if (vmdef->nparallels > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support parallels"));
-        ret = 1;
-    }
-    if (vmdef->nchannels > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support channels"));
-        ret = 1;
-    }
-    if (vmdef->nconsoles > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support consoles"));
-        ret = 1;
-    }
-    if (vmdef->nleases > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support leases"));
-        ret = 1;
-    }
-    if (vmdef->nhubs > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support hubs"));
-        ret = 1;
-    }
-    if (vmdef->nseclabels > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support seclabels"));
-        ret = 1;
-    }
-    if (vmdef->nrngs > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support rngs"));
-        ret = 1;
-    }
-    if (vmdef->nshmems > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support shmems"));
-        ret = 1;
-    }
-    if (vmdef->nmems > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support mems"));
-        ret = 1;
-    }
-    if (vmdef->npanics > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support panics"));
-        ret = 1;
-    }
-    if (vmdef->nsysinfo > 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Cloud-Hypervisor doesn't support sysinfo"));
-        ret = 1;
-    }
-
-    return ret;
-}
-
-static int
-virCHMonitorBuildVMJson(virDomainObjPtr vm, virDomainDefPtr vmdef, char **jsonstr,
-                        size_t *nnicindexes, int **nicindexes)
-{
-    virJSONValue *content = virJSONValueNewObject();
-    int ret = -1;
-
-    if (vmdef == NULL) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("VM is not defined"));
-        goto cleanup;
-    }
-
-    if (virCHMonitorDetectUnsupportedDevices(vmdef))
-        goto cleanup;
-
-    if (virCHMonitorBuildCPUJson(content, vmdef) < 0)
-        goto cleanup;
-
-    if (virCHMonitorBuildMemoryJson(content, vmdef) < 0)
-        goto cleanup;
-
-    if (virCHMonitorBuildKernelRelatedJson(content, vmdef) < 0)
-        goto cleanup;
-
-    if (virCHMonitorBuildDisksJson(content, vmdef) < 0)
-        goto cleanup;
-
-    if (virCHMonitorBuildNetsJson(vm, content, vmdef,
-                                  nnicindexes, nicindexes) < 0)
-        goto cleanup;
-
-    if (virCHMonitorBuildDevicesJson(content, vmdef) < 0)
-        goto cleanup;
-
-    if (!(*jsonstr = virJSONValueToString(content, false)))
-        goto cleanup;
-
-    ret = 0;
-
- cleanup:
-    virJSONValueFree(content);
-    return ret;
-}
-
-static int
-chMonitorCreateSocket(const char *socket_path)
-{
-    struct sockaddr_un addr;
-    socklen_t addrlen = sizeof(addr);
-    int fd;
-
-    if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-        virReportSystemError(errno, "%s",
-                             _("Unable to create UNIX socket"));
-        goto error;
-    }
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    if (virStrcpyStatic(addr.sun_path, socket_path) < 0) {
+      if (virSocketAddrPrefixToNetmask(ip->prefix, &netmask, AF_INET) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("UNIX socket path '%s' too long"),
-                       socket_path);
-        goto error;
+                       _("Failed to translate net prefix %d to netmask"),
+                       ip->prefix);
+        goto cleanup;
+      }
+      if (!(netmaskStr = virSocketAddrFormat(&netmask)))
+        goto cleanup;
+      if (virJSONValueObjectAppendString(net, "mask", netmaskStr) < 0)
+        goto cleanup;
+    } else if (netdef->guestIP.nips > 1) {
+      virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                     _("ethernet type supports a single guest ip"));
     }
-
-    if (unlink(socket_path) < 0 && errno != ENOENT) {
-        virReportSystemError(errno,
-                             _("Unable to unlink %s"),
-                             socket_path);
-        goto error;
+    break;
+  case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
+    if ((virDomainChrType)netdef->data.vhostuser->type !=
+        VIR_DOMAIN_CHR_TYPE_UNIX) {
+      virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                     _("vhost_user type support UNIX socket in this CH"));
+      goto cleanup;
+    } else {
+      if (virJSONValueObjectAppendString(
+              net, "vhost_socket", netdef->data.vhostuser->data.nix.path) < 0)
+        goto cleanup;
+      if (virJSONValueObjectAppendBoolean(net, "vhost_user", true) < 0)
+        goto cleanup;
     }
+    break;
+  case VIR_DOMAIN_NET_TYPE_NETWORK:
+    // TAP device is created and attached to selected bridge in
+    // chProcessNetworkPrepareDevices nothing more to do here
+    break;
+  case VIR_DOMAIN_NET_TYPE_BRIDGE:
+  case VIR_DOMAIN_NET_TYPE_DIRECT:
+  case VIR_DOMAIN_NET_TYPE_USER:
+  case VIR_DOMAIN_NET_TYPE_SERVER:
+  case VIR_DOMAIN_NET_TYPE_CLIENT:
+  case VIR_DOMAIN_NET_TYPE_MCAST:
+  case VIR_DOMAIN_NET_TYPE_INTERNAL:
+  case VIR_DOMAIN_NET_TYPE_HOSTDEV:
+  case VIR_DOMAIN_NET_TYPE_UDP:
+  case VIR_DOMAIN_NET_TYPE_VDPA:
+  case VIR_DOMAIN_NET_TYPE_LAST:
+  default:
+    virReportEnumRangeError(virDomainNetType, netType);
+    goto cleanup;
+  }
 
-    if (bind(fd, (struct sockaddr *)&addr, addrlen) < 0) {
-        virReportSystemError(errno,
-                             _("Unable to bind to UNIX socket path '%s'"),
-                             socket_path);
-        goto error;
+  clh_tapfds = virJSONValueNewArray();
+  for (i = 0; i < priv->tapfdSize; i++) {
+    virJSONValueArrayAppend(clh_tapfds,
+                            *virJSONValueNewNumberUint(priv->tapfd[i]));
+  }
+
+  if (virJSONValueObjectAppend(net, "fds", clh_tapfds) < 0)
+    goto cleanup;
+
+  if (virJSONValueObjectAppendString(
+          net, "mac", virMacAddrFormat(&netdef->mac, macaddr)) < 0)
+    goto cleanup;
+
+  if (netdef->virtio != NULL) {
+    if (netdef->virtio->iommu == VIR_TRISTATE_SWITCH_ON) {
+      if (virJSONValueObjectAppendBoolean(net, "iommu", true) < 0)
+        goto cleanup;
     }
+  }
+  if (netdef->driver.virtio.queues) {
+    if (virJSONValueObjectAppendNumberInt(net, "num_queues",
+                                          netdef->driver.virtio.queues) < 0)
+      goto cleanup;
+  }
 
-    if (listen(fd, 1) < 0) {
-        virReportSystemError(errno,
-                             _("Unable to listen to UNIX socket path '%s'"),
-                             socket_path);
-        goto error;
+  if (netdef->driver.virtio.rx_queue_size ||
+      netdef->driver.virtio.tx_queue_size) {
+    if (netdef->driver.virtio.rx_queue_size !=
+        netdef->driver.virtio.tx_queue_size) {
+      virReportError(
+          VIR_ERR_CONFIG_UNSUPPORTED,
+          _("virtio rx_queue_size option %d is not same with tx_queue_size %d"),
+          netdef->driver.virtio.rx_queue_size,
+          netdef->driver.virtio.tx_queue_size);
+      goto cleanup;
     }
+    if (virJSONValueObjectAppendNumberInt(
+            net, "queue_size", netdef->driver.virtio.rx_queue_size) < 0)
+      goto cleanup;
+  }
 
-    /* We run cloud-hypervisor with umask 0002. Compensate for the umask
-     * libvirtd might be running under to get the same permission
-     * cloud-hypervisor would have. */
-    if (virFileUpdatePerm(socket_path, 0002, 0664) < 0)
-        goto error;
+  if (virJSONValueArrayAppend(nets, &net) < 0)
+    goto cleanup;
 
-    return fd;
+  return 0;
 
- error:
-    VIR_FORCE_CLOSE(fd);
-    return -1;
+cleanup:
+  virJSONValueFree(net);
+  return -1;
 }
 
-virCHMonitor *
-virCHMonitorNew(virDomainObj *vm, const char *socketdir)
-{
-    virCHMonitorPtr ret = NULL;
-    virCHMonitorPtr mon = NULL;
-    virCommandPtr cmd = NULL;
-    int i;
-    virCHDomainObjPrivatePtr priv = vm->privateData;
-    int pings = 0;
+static int virCHMonitorBuildNetsJson(virDomainObj *vm, virJSONValue *content,
+                                     virDomainDef *vmdef, size_t *nnicindexes,
+                                     int **nicindexes) {
+  virJSONValue *nets;
+  size_t i;
 
-    if (virCHMonitorInitialize() < 0)
-        return NULL;
+  if (vmdef->nnets > 0) {
+    nets = virJSONValueNewArray();
 
-    if (!(mon = virObjectLockableNew(virCHMonitorClass)))
-        return NULL;
-
-    if (!vm->def) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("VM is not defined"));
-        return NULL;
-    }
-
-    /* prepare to launch Cloud-Hypervisor socket */
-    mon->socketpath = g_strdup_printf("%s/%s-socket", socketdir, vm->def->name);
-    if (g_mkdir_with_parents(socketdir, 0777) < 0) {
-        virReportSystemError(errno,
-                             _("Cannot create socket directory '%s'"),
-                             socketdir);
+    for (i = 0; i < vmdef->nnets; i++) {
+      if (virCHMonitorBuildNetJson(vm, nets, vmdef->nets[i], nnicindexes,
+                                   nicindexes) < 0)
         goto cleanup;
     }
-    for (i = 0; i < priv->tapfdSize; i++) {
-        virCommandPassFD(cmd, priv->tapfd[i],
-                         VIR_COMMAND_PASS_FD_CLOSE_PARENT);
-    }
+    if (virJSONValueObjectAppend(content, "net", &nets) < 0)
+      goto cleanup;
+  }
 
-    cmd = virCommandNew(vm->def->emulator);
-    virCommandSetUmask(cmd, 0x002);
-    socket_fd = chMonitorCreateSocket(mon->socketpath);
-    if (socket_fd < 0) {
-        virReportSystemError(errno,
-                             _("Cannot create socket '%s'"),
-                             mon->socketpath);
-        goto cleanup;
-    }
+  return 0;
 
-    virCommandAddArg(cmd, "--api-socket");
-    virCommandAddArgFormat(cmd, "fd=%d", socket_fd);
-    virCommandPassFD(cmd, socket_fd, VIR_COMMAND_PASS_FD_CLOSE_PARENT);
-
-    /* launch Cloud-Hypervisor socket */
-    if (virCommandRunAsync(cmd, &mon->pid) < 0)
-        goto cleanup;
-
-    /* get a curl handle */
-    mon->handle = curl_easy_init();
-
-    /* now has its own reference */
-    virObjectRef(mon);
-    mon->vm = virObjectRef(vm);
-
-    ret = mon;
-
- cleanup:
-    virCommandFree(cmd);
-    return ret;
+cleanup:
+  virJSONValueFree(nets);
+  return -1;
 }
 
-static void virCHMonitorDispose(void *opaque)
-{
-    virCHMonitor *mon = opaque;
+static int virCHMonitorDetectUnsupportedDevices(virDomainDef *vmdef) {
+  int ret = 0;
 
-    VIR_DEBUG("mon=%p", mon);
+  if (vmdef->ngraphics > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support graphics"));
+    ret = 1;
+  }
+  if (vmdef->ncontrollers > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support controllers"));
+    ret = 1;
+  }
+  if (vmdef->nfss > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support fss"));
+    ret = 1;
+  }
+  if (vmdef->ninputs > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support inputs"));
+    ret = 1;
+  }
+  if (vmdef->nsounds > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support sounds"));
+    ret = 1;
+  }
+  if (vmdef->naudios > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support audios"));
+    ret = 1;
+  }
+  if (vmdef->nvideos > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support videos"));
+    ret = 1;
+  }
+  if (vmdef->nhostdevs > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support hostdevs"));
+    ret = 1;
+  }
+  if (vmdef->nredirdevs > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support redirdevs"));
+    ret = 1;
+  }
+  if (vmdef->nsmartcards > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support smartcards"));
+    ret = 1;
+  }
+  if (vmdef->nserials > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support serials"));
+    ret = 1;
+  }
+  if (vmdef->nparallels > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support parallels"));
+    ret = 1;
+  }
+  if (vmdef->nchannels > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support channels"));
+    ret = 1;
+  }
+  if (vmdef->nconsoles > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support consoles"));
+    ret = 1;
+  }
+  if (vmdef->nleases > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support leases"));
+    ret = 1;
+  }
+  if (vmdef->nhubs > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support hubs"));
+    ret = 1;
+  }
+  if (vmdef->nseclabels > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support seclabels"));
+    ret = 1;
+  }
+  if (vmdef->nrngs > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support rngs"));
+    ret = 1;
+  }
+  if (vmdef->nshmems > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support shmems"));
+    ret = 1;
+  }
+  if (vmdef->nmems > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support mems"));
+    ret = 1;
+  }
+  if (vmdef->npanics > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support panics"));
+    ret = 1;
+  }
+  if (vmdef->nsysinfo > 0) {
+    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                   _("Cloud-Hypervisor doesn't support sysinfo"));
+    ret = 1;
+  }
+
+  return ret;
+}
+
+static int virCHMonitorBuildVMJson(virDomainObj *vm, virDomainDef *vmdef,
+                                   char **jsonstr, size_t *nnicindexes,
+                                   int **nicindexes) {
+  virJSONValue *content = virJSONValueNewObject();
+  int ret = -1;
+
+  if (vmdef == NULL) {
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("VM is not defined"));
+    goto cleanup;
+  }
+
+  if (virCHMonitorDetectUnsupportedDevices(vmdef))
+    goto cleanup;
+
+  if (virCHMonitorBuildCPUJson(content, vmdef) < 0)
+    goto cleanup;
+
+  if (virCHMonitorBuildMemoryJson(content, vmdef) < 0)
+    goto cleanup;
+
+  if (virCHMonitorBuildKernelRelatedJson(content, vmdef) < 0)
+    goto cleanup;
+
+  if (virCHMonitorBuildDisksJson(content, vmdef) < 0)
+    goto cleanup;
+
+  if (virCHMonitorBuildNetsJson(vm, content, vmdef, nnicindexes, nicindexes) <
+      0)
+    goto cleanup;
+
+  if (virCHMonitorBuildDevicesJson(content, vmdef) < 0)
+    goto cleanup;
+
+  if (!(*jsonstr = virJSONValueToString(content, false)))
+    goto cleanup;
+
+  ret = 0;
+
+cleanup:
+  virJSONValueFree(content);
+  return ret;
+}
+
+static int chMonitorCreateSocket(const char *socket_path) {
+  struct sockaddr_un addr;
+  socklen_t addrlen = sizeof(addr);
+  int fd;
+
+  if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+    virReportSystemError(errno, "%s", _("Unable to create UNIX socket"));
+    goto error;
+  }
+
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  if (virStrcpyStatic(addr.sun_path, socket_path) < 0) {
+    virReportError(VIR_ERR_INTERNAL_ERROR, _("UNIX socket path '%s' too long"),
+                   socket_path);
+    goto error;
+  }
+
+  if (unlink(socket_path) < 0 && errno != ENOENT) {
+    virReportSystemError(errno, _("Unable to unlink %s"), socket_path);
+    goto error;
+  }
+
+  if (bind(fd, (struct sockaddr *)&addr, addrlen) < 0) {
+    virReportSystemError(errno, _("Unable to bind to UNIX socket path '%s'"),
+                         socket_path);
+    goto error;
+  }
+
+  if (listen(fd, 1) < 0) {
+    virReportSystemError(errno, _("Unable to listen to UNIX socket path '%s'"),
+                         socket_path);
+    goto error;
+  }
+
+  /* We run cloud-hypervisor with umask 0002. Compensate for the umask
+   * libvirtd might be running under to get the same permission
+   * cloud-hypervisor would have. */
+  if (virFileUpdatePerm(socket_path, 0002, 0664) < 0)
+    goto error;
+
+  return fd;
+
+error:
+  VIR_FORCE_CLOSE(fd);
+  return -1;
+}
+
+virCHMonitor *virCHMonitorNew(virDomainObj *vm, const char *socketdir) {
+  virCHMonitor *ret = NULL;
+  virCHMonitor *mon = NULL;
+  virCommand *cmd = NULL;
+  int i;
+  virCHDomainObjPrivate *priv = vm->privateData;
+  int pings = 0;
+
+  if (virCHMonitorInitialize() < 0)
+    return NULL;
+
+  if (!(mon = virObjectLockableNew(virCHMonitorClass)))
+    return NULL;
+
+  if (!vm->def) {
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("VM is not defined"));
+    return NULL;
+  }
+
+  /* prepare to launch Cloud-Hypervisor socket */
+  mon->socketpath = g_strdup_printf("%s/%s-socket", socketdir, vm->def->name);
+  if (g_mkdir_with_parents(socketdir, 0777) < 0) {
+    virReportSystemError(errno, _("Cannot create socket directory '%s'"),
+                         socketdir);
+    goto cleanup;
+  }
+  for (i = 0; i < priv->tapfdSize; i++) {
+    virCommandPassFD(cmd, priv->tapfd[i], VIR_COMMAND_PASS_FD_CLOSE_PARENT);
+  }
+
+  cmd = virCommandNew(vm->def->emulator);
+  virCommandSetUmask(cmd, 0x002);
+  socket_fd = chMonitorCreateSocket(mon->socketpath);
+  if (socket_fd < 0) {
+    virReportSystemError(errno, _("Cannot create socket '%s'"),
+                         mon->socketpath);
+    goto cleanup;
+  }
+
+  virCommandAddArg(cmd, "--api-socket");
+  virCommandAddArgFormat(cmd, "fd=%d", socket_fd);
+  virCommandPassFD(cmd, socket_fd, VIR_COMMAND_PASS_FD_CLOSE_PARENT);
+
+  /* launch Cloud-Hypervisor socket */
+  if (virCommandRunAsync(cmd, &mon->pid) < 0)
+    goto cleanup;
+
+  /* get a curl handle */
+  mon->handle = curl_easy_init();
+
+  /* now has its own reference */
+  virObjectRef(mon);
+  mon->vm = virObjectRef(vm);
+
+  ret = mon;
+
+cleanup:
+  virCommandFree(cmd);
+  return ret;
+}
+
+static void virCHMonitorDispose(void *opaque) {
+  virCHMonitor *mon = opaque;
+
+  VIR_DEBUG("mon=%p", mon);
+  virObjectUnref(mon->vm);
+}
+
+void virCHMonitorClose(virCHMonitor *mon) {
+  if (!mon)
+    return;
+
+  if (mon->pid > 0) {
+    /* try cleaning up the Cloud-Hypervisor process */
+    virProcessAbort(mon->pid);
+    mon->pid = 0;
+  }
+
+  if (mon->handle)
+    curl_easy_cleanup(mon->handle);
+
+  if (mon->socketpath) {
+    if (virFileRemove(mon->socketpath, -1, -1) < 0) {
+      VIR_WARN("Unable to remove CH socket file '%s'", mon->socketpath);
+    }
+    g_free(mon->socketpath);
+  }
+
+  virObjectUnref(mon);
+  if (mon->vm)
     virObjectUnref(mon->vm);
 }
 
-void virCHMonitorClose(virCHMonitor *mon)
-{
-    if (!mon)
-        return;
+static int virCHMonitorCurlPerform(CURL *handle) {
+  CURLcode errorCode;
+  long responseCode = 0;
 
-    if (mon->pid > 0) {
-        /* try cleaning up the Cloud-Hypervisor process */
-        virProcessAbort(mon->pid);
-        mon->pid = 0;
-    }
+  errorCode = curl_easy_perform(handle);
 
-    if (mon->handle)
-        curl_easy_cleanup(mon->handle);
+  if (errorCode != CURLE_OK) {
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   _("curl_easy_perform() returned an error: %s (%d)"),
+                   curl_easy_strerror(errorCode), errorCode);
+    return -1;
+  }
 
-    if (mon->socketpath) {
-        if (virFileRemove(mon->socketpath, -1, -1) < 0) {
-            VIR_WARN("Unable to remove CH socket file '%s'",
-                     mon->socketpath);
-        }
-        g_free(mon->socketpath);
-    }
+  errorCode = curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &responseCode);
 
-    virObjectUnref(mon);
-    if (mon->vm)
-        virObjectUnref(mon->vm);
+  if (errorCode != CURLE_OK) {
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   _("curl_easy_getinfo(CURLINFO_RESPONSE_CODE) returned an "
+                     "error: %s (%d)"),
+                   curl_easy_strerror(errorCode), errorCode);
+    return -1;
+  }
+
+  if (responseCode < 0) {
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("curl_easy_getinfo(CURLINFO_RESPONSE_CODE) returned a "
+                     "negative response code"));
+    return -1;
+  }
+
+  return responseCode;
 }
 
-static int
-virCHMonitorCurlPerform(CURL *handle)
-{
-    CURLcode errorCode;
-    long responseCode = 0;
+int virCHMonitorPutNoContent(virCHMonitor *mon, const char *endpoint) {
+  g_autofree char *url = NULL;
+  int responseCode = 0;
+  int ret = -1;
 
-    errorCode = curl_easy_perform(handle);
+  url = g_strdup_printf("%s/%s", URL_ROOT, endpoint);
 
-    if (errorCode != CURLE_OK) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("curl_easy_perform() returned an error: %s (%d)"),
-                       curl_easy_strerror(errorCode), errorCode);
-        return -1;
-    }
+  virObjectLock(mon);
 
-    errorCode = curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE,
-                                  &responseCode);
+  /* reset all options of a libcurl session handle at first */
+  curl_easy_reset(mon->handle);
 
-    if (errorCode != CURLE_OK) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("curl_easy_getinfo(CURLINFO_RESPONSE_CODE) returned an "
-                         "error: %s (%d)"), curl_easy_strerror(errorCode),
-                       errorCode);
-        return -1;
-    }
+  curl_easy_setopt(mon->handle, CURLOPT_UNIX_SOCKET_PATH, mon->socketpath);
+  curl_easy_setopt(mon->handle, CURLOPT_URL, url);
+  curl_easy_setopt(mon->handle, CURLOPT_PUT, true);
+  curl_easy_setopt(mon->handle, CURLOPT_HTTPHEADER, NULL);
 
-    if (responseCode < 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("curl_easy_getinfo(CURLINFO_RESPONSE_CODE) returned a "
-                         "negative response code"));
-        return -1;
-    }
+  responseCode = virCHMonitorCurlPerform(mon->handle);
 
-    return responseCode;
+  virObjectUnlock(mon);
+
+  if (responseCode == 200 || responseCode == 204)
+    ret = 0;
+
+  return ret;
 }
 
-int
-virCHMonitorPutNoContent(virCHMonitor *mon, const char *endpoint)
-{
-    g_autofree char *url = NULL;
-    int responseCode = 0;
-    int ret = -1;
+int virCHMonitorGet(virCHMonitor *mon, const char *endpoint) {
+  g_autofree char *url = NULL;
+  int responseCode = 0;
+  int ret = -1;
 
-    url = g_strdup_printf("%s/%s", URL_ROOT, endpoint);
+  url = g_strdup_printf("%s/%s", URL_ROOT, endpoint);
 
-    virObjectLock(mon);
+  virObjectLock(mon);
 
-    /* reset all options of a libcurl session handle at first */
-    curl_easy_reset(mon->handle);
+  /* reset all options of a libcurl session handle at first */
+  curl_easy_reset(mon->handle);
 
-    curl_easy_setopt(mon->handle, CURLOPT_UNIX_SOCKET_PATH, mon->socketpath);
-    curl_easy_setopt(mon->handle, CURLOPT_URL, url);
-    curl_easy_setopt(mon->handle, CURLOPT_PUT, true);
-    curl_easy_setopt(mon->handle, CURLOPT_HTTPHEADER, NULL);
+  curl_easy_setopt(mon->handle, CURLOPT_UNIX_SOCKET_PATH, mon->socketpath);
+  curl_easy_setopt(mon->handle, CURLOPT_URL, url);
 
-    responseCode = virCHMonitorCurlPerform(mon->handle);
+  responseCode = virCHMonitorCurlPerform(mon->handle);
 
-    virObjectUnlock(mon);
+  virObjectUnlock(mon);
 
-    if (responseCode == 200 || responseCode == 204)
-        ret = 0;
+  if (responseCode == 200 || responseCode == 204)
+    ret = 0;
 
-    return ret;
+  return ret;
 }
 
-int
-virCHMonitorGet(virCHMonitor *mon, const char *endpoint)
-{
-    g_autofree char *url = NULL;
-    int responseCode = 0;
-    int ret = -1;
-
-    url = g_strdup_printf("%s/%s", URL_ROOT, endpoint);
-
-    virObjectLock(mon);
-
-    /* reset all options of a libcurl session handle at first */
-    curl_easy_reset(mon->handle);
-
-    curl_easy_setopt(mon->handle, CURLOPT_UNIX_SOCKET_PATH, mon->socketpath);
-    curl_easy_setopt(mon->handle, CURLOPT_URL, url);
-
-    responseCode = virCHMonitorCurlPerform(mon->handle);
-
-    virObjectUnlock(mon);
-
-    if (responseCode == 200 || responseCode == 204)
-        ret = 0;
-
-    return ret;
+int virCHMonitorShutdownVMM(virCHMonitor *mon) {
+  return virCHMonitorPutNoContent(mon, URL_VMM_SHUTDOWN);
 }
 
-int
-virCHMonitorShutdownVMM(virCHMonitor *mon)
-{
-    return virCHMonitorPutNoContent(mon, URL_VMM_SHUTDOWN);
+int virCHMonitorCreateVM(virCHMonitor *mon, size_t *nnicindexes,
+                         int **nicindexes) {
+  g_autofree char *url = NULL;
+  int responseCode = 0;
+  int ret = -1;
+  g_autofree char *payload = NULL;
+  struct curl_slist *headers = NULL;
+
+  url = g_strdup_printf("%s/%s", URL_ROOT, URL_VM_CREATE);
+  headers = curl_slist_append(headers, "Accept: application/json");
+  headers = curl_slist_append(headers, "Content-Type: application/json");
+
+  if (virCHMonitorBuildVMJson(mon->vm, mon->vm->def, &payload, nnicindexes,
+                              nicindexes) != 0)
+    return -1;
+
+  virObjectLock(mon);
+
+  /* reset all options of a libcurl session handle at first */
+  curl_easy_reset(mon->handle);
+
+  curl_easy_setopt(mon->handle, CURLOPT_UNIX_SOCKET_PATH, mon->socketpath);
+  curl_easy_setopt(mon->handle, CURLOPT_URL, url);
+  curl_easy_setopt(mon->handle, CURLOPT_CUSTOMREQUEST, "PUT");
+  curl_easy_setopt(mon->handle, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(mon->handle, CURLOPT_POSTFIELDS, payload);
+
+  responseCode = virCHMonitorCurlPerform(mon->handle);
+
+  virObjectUnlock(mon);
+
+  if (responseCode == 200 || responseCode == 204)
+    ret = 0;
+
+  curl_slist_free_all(headers);
+  return ret;
 }
 
-int
-virCHMonitorCreateVM(virCHMonitor *mon)
-{
-    g_autofree char *url = NULL;
-    int responseCode = 0;
-    int ret = -1;
-    g_autofree char *payload = NULL;
-    struct curl_slist *headers = NULL;
-
-    url = g_strdup_printf("%s/%s", URL_ROOT, URL_VM_CREATE);
-    headers = curl_slist_append(headers, "Accept: application/json");
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
-    if (virCHMonitorBuildVMJson(mon->vm, mon->vm->def, &payload,
-                                nnicindexes, nicindexes) != 0)
-        return -1;
-
-    virObjectLock(mon);
-
-    /* reset all options of a libcurl session handle at first */
-    curl_easy_reset(mon->handle);
-
-    curl_easy_setopt(mon->handle, CURLOPT_UNIX_SOCKET_PATH, mon->socketpath);
-    curl_easy_setopt(mon->handle, CURLOPT_URL, url);
-    curl_easy_setopt(mon->handle, CURLOPT_CUSTOMREQUEST, "PUT");
-    curl_easy_setopt(mon->handle, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(mon->handle, CURLOPT_POSTFIELDS, payload);
-
-    responseCode = virCHMonitorCurlPerform(mon->handle);
-
-    virObjectUnlock(mon);
-
-    if (responseCode == 200 || responseCode == 204)
-        ret = 0;
-
-    curl_slist_free_all(headers);
-    return ret;
+int virCHMonitorBootVM(virCHMonitor *mon) {
+  return virCHMonitorPutNoContent(mon, URL_VM_BOOT);
 }
 
-int
-virCHMonitorBootVM(virCHMonitor *mon)
-{
-    return virCHMonitorPutNoContent(mon, URL_VM_BOOT);
+int virCHMonitorShutdownVM(virCHMonitor *mon) {
+  return virCHMonitorPutNoContent(mon, URL_VM_SHUTDOWN);
 }
 
-int
-virCHMonitorShutdownVM(virCHMonitor *mon)
-{
-    return virCHMonitorPutNoContent(mon, URL_VM_SHUTDOWN);
+int virCHMonitorRebootVM(virCHMonitor *mon) {
+  return virCHMonitorPutNoContent(mon, URL_VM_REBOOT);
 }
 
-int
-virCHMonitorRebootVM(virCHMonitor *mon)
-{
-    return virCHMonitorPutNoContent(mon, URL_VM_REBOOT);
+int virCHMonitorSuspendVM(virCHMonitor *mon) {
+  return virCHMonitorPutNoContent(mon, URL_VM_Suspend);
 }
 
-int
-virCHMonitorSuspendVM(virCHMonitor *mon)
-{
-    return virCHMonitorPutNoContent(mon, URL_VM_Suspend);
-}
-
-int
-virCHMonitorResumeVM(virCHMonitor *mon)
-{
-    return virCHMonitorPutNoContent(mon, URL_VM_RESUME);
+int virCHMonitorResumeVM(virCHMonitor *mon) {
+  return virCHMonitorPutNoContent(mon, URL_VM_RESUME);
 }

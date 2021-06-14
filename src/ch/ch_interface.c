@@ -27,9 +27,9 @@ VIR_LOG_INIT("ch.ch_interface");
  * device connecting to a bridge device)
  */
 int
-chInterfaceBridgeConnect(virDomainDefPtr def,
-                           virCHDriverPtr driver,
-                           virDomainNetDefPtr net,
+chInterfaceBridgeConnect(virDomainDef *def,
+                           virCHDriver *driver,
+                           virDomainNetDef *net,
                            int *tapfd,
                            size_t *tapfdSize)
 {
@@ -37,7 +37,7 @@ chInterfaceBridgeConnect(virDomainDefPtr def,
     int ret = 0;
     unsigned int tap_create_flags = VIR_NETDEV_TAP_CREATE_IFUP;
     bool template_ifname = false;
-    virCHDriverConfigPtr cfg = virCHDriverGetConfig(driver);
+    virCHDriverConfig *cfg = virCHDriverGetConfig(driver);
     const char *tunpath = "/dev/net/tun";
 
     if (net->backend.tap) {
@@ -55,10 +55,10 @@ chInterfaceBridgeConnect(virDomainDefPtr def,
     }
 
     if (!net->ifname ||
-        STRPREFIX(net->ifname, VIR_NET_GENERATED_TAP_PREFIX) ||
+        STRPREFIX(net->ifname, VIR_NET_GENERATED_VNET_PREFIX) ||
         strchr(net->ifname, '%')) {
         VIR_FREE(net->ifname);
-        net->ifname = g_strdup(VIR_NET_GENERATED_TAP_PREFIX "%d");
+        net->ifname = g_strdup(VIR_NET_GENERATED_VNET_PREFIX "%d");
         /* avoid exposing vnet%d in getXMLDesc or error outputs */
         template_ifname = true;
     }
