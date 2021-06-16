@@ -22,6 +22,8 @@
 
 #include "ch_conf.h"
 #include "ch_monitor.h"
+#include "virchrdev.h"
+#include "vircgroup.h"
 
 /* Give up waiting for mutex after 30 seconds */
 #define CH_JOB_WAIT_TIME (1000ull * 30)
@@ -51,8 +53,36 @@ typedef struct _virCHDomainObjPrivate virCHDomainObjPrivate;
 struct _virCHDomainObjPrivate {
     struct virCHDomainJobObj job;
 
+    virCHDriver *driver;
+
     virCHMonitor *monitor;
+
+    virChrdevs *devs;
+
+    char *machineName;
+
+    virBitmap *autoNodeset;
+    virBitmap *autoCpuset;
+
+    virCgroup *cgroup;
 };
+
+#define CH_DOMAIN_PRIVATE(vm) \
+    ((virCHDomainObjPrivate *) (vm)->privateData)
+
+virCHMonitor *virCHDomainGetMonitor(virDomainObj *vm);
+
+typedef struct _virCHDomainVcpuPrivate virCHDomainVcpuPrivate;
+
+struct _virCHDomainVcpuPrivate {
+    virObject parent;
+
+    pid_t tid; /* vcpu thread id */
+    virTristateBool halted;
+};
+
+#define CH_DOMAIN_VCPU_PRIVATE(vcpu) \
+    ((virCHDomainVcpuPrivate *) (vcpu)->privateData)
 
 extern virDomainXMLPrivateDataCallbacks virCHDriverPrivateDataCallbacks;
 extern virDomainDefParserConfig virCHDriverDomainDefParserConfig;
@@ -63,3 +93,11 @@ virCHDomainObjBeginJob(virDomainObj *obj, enum virCHDomainJob job)
 
 void
 virCHDomainObjEndJob(virDomainObj *obj);
+
+int virCHDomainRefreshThreadInfo(virDomainObj *vm);
+
+pid_t virCHDomainGetVcpuPid(virDomainObj *vm, unsigned int vcpuid);
+bool virCHDomainHasVcpuPids(virDomainObj *vm);
+
+char *virCHDomainGetMachineName(virDomainObj *vm);
+virDomainObj *virCHDomainObjFromDomain(virDomain *domain);

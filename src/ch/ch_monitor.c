@@ -20,9 +20,9 @@
 
 #include <config.h>
 
+#include <curl/curl.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <curl/curl.h>
 
 #include "ch_conf.h"
 #include "ch_monitor.h"
@@ -41,6 +41,8 @@ VIR_LOG_INIT("ch.ch_monitor");
 
 static virClass *virCHMonitorClass;
 static void virCHMonitorDispose(void *obj);
+
+static void virCHMonitorThreadInfoFree(virCHMonitor *mon);
 
 static int virCHMonitorOnceInit(void)
 {
@@ -229,7 +231,8 @@ virCHMonitorBuildDisksJson(virJSONValue *content, virDomainDef *vmdef)
 }
 
 static int
-virCHMonitorBuildNetJson(virJSONValue *nets, virDomainNetDef *netdef)
+virCHMonitorBuildNetJson(virJSONValue *nets, virDomainNetDef *netdef, 
+                        size_t *nnicindexes, int **nicindexes)
 {
     virDomainNetType netType = virDomainNetGetActualType(netdef);
     char macaddr[VIR_MAC_STRING_BUFLEN];
@@ -264,19 +267,29 @@ virCHMonitorBuildNetJson(virJSONValue *nets, virDomainNetDef *netdef)
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                            _("ethernet type supports a single guest ip"));
         }
-        break;
-    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
-        if ((virDomainChrType)netdef->data.vhostuser->type != VIR_DOMAIN_CHR_TYPE_UNIX) {
-            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                           _("vhost_user type support UNIX socket in this CH"));
+
+        /* network and bridge use a tap device, and direct uses a
+        * macvtap device
+        */
+        if (nicindexes && nnicindexes && netdef->ifname) {
+          int nicindex;
+          if (virNetDevGetIndex(netdef->ifname, &nicindex) < 0 ||
+              VIR_APPEND_ELEMENT(*nicindexes, *nnicindexes, nicindex) < 0)
             goto cleanup;
-        } else {
-            if (virJSONValueObjectAppendString(net, "vhost_socket", netdef->data.vhostuser->data.nix.path) < 0)
-                goto cleanup;
-            if (virJSONValueObjectAppendBoolean(net, "vhost_user", true) < 0)
-                goto cleanup;
         }
-        break;
+    break;
+    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
+      if ((virDomainChrType)netdef->data.vhostuser->type != VIR_DOMAIN_CHR_TYPE_UNIX) {
+          virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                          _("vhost_user type support UNIX socket in this CH"));
+          goto cleanup;
+      } else {
+          if (virJSONValueObjectAppendString(net, "vhost_socket", netdef->data.vhostuser->data.nix.path) < 0)
+              goto cleanup;
+          if (virJSONValueObjectAppendBoolean(net, "vhost_user", true) < 0)
+              goto cleanup;
+      }
+      break;
     case VIR_DOMAIN_NET_TYPE_BRIDGE:
     case VIR_DOMAIN_NET_TYPE_NETWORK:
     case VIR_DOMAIN_NET_TYPE_DIRECT:
@@ -336,7 +349,8 @@ virCHMonitorBuildNetJson(virJSONValue *nets, virDomainNetDef *netdef)
 }
 
 static int
-virCHMonitorBuildNetsJson(virJSONValue *content, virDomainDef *vmdef)
+virCHMonitorBuildNetsJson(virJSONValue *content, virDomainDef *vmdef,
+              size_t *nnicindexes, int **nicindexes)
 {
     virJSONValue *nets;
     size_t i;
@@ -345,7 +359,7 @@ virCHMonitorBuildNetsJson(virJSONValue *content, virDomainDef *vmdef)
         nets = virJSONValueNewArray();
 
         for (i = 0; i < vmdef->nnets; i++) {
-            if (virCHMonitorBuildNetJson(nets, vmdef->nets[i]) < 0)
+            if (virCHMonitorBuildNetJson(nets, vmdef->nets[i], nnicindexes, nicindexes) < 0)
                 goto cleanup;
         }
         if (virJSONValueObjectAppend(content, "net", &nets) < 0)
@@ -478,9 +492,8 @@ virCHMonitorDetectUnsupportedDevices(virDomainDef *vmdef)
     return ret;
 }
 
-static int
-virCHMonitorBuildVMJson(virDomainDef *vmdef, char **jsonstr)
-{
+static int virCHMonitorBuildVMJson(virDomainDef *vmdef, char **jsonstr,
+                                   size_t *nnicindexes, int **nicindexes) {
     virJSONValue *content = virJSONValueNewObject();
     int ret = -1;
 
@@ -505,7 +518,7 @@ virCHMonitorBuildVMJson(virDomainDef *vmdef, char **jsonstr)
     if (virCHMonitorBuildDisksJson(content, vmdef) < 0)
         goto cleanup;
 
-    if (virCHMonitorBuildNetsJson(content, vmdef) < 0)
+    if (virCHMonitorBuildNetsJson(content, vmdef, nnicindexes, nicindexes) < 0)
         goto cleanup;
 
     if (!(*jsonstr = virJSONValueToString(content, false)))
@@ -769,8 +782,8 @@ virCHMonitorShutdownVMM(virCHMonitor *mon)
 }
 
 int
-virCHMonitorCreateVM(virCHMonitor *mon)
-{
+virCHMonitorCreateVM(virCHMonitor *mon, size_t *nnicindexes,
+        int **nicindexes) {
     g_autofree char *url = NULL;
     int responseCode = 0;
     int ret = -1;
@@ -781,7 +794,7 @@ virCHMonitorCreateVM(virCHMonitor *mon)
     headers = curl_slist_append(headers, "Accept: application/json");
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    if (virCHMonitorBuildVMJson(mon->vm->def, &payload) != 0)
+    if (virCHMonitorBuildVMJson(mon->vm->def, &payload, nnicindexes, nicindexes) != 0)
         return -1;
 
     virObjectLock(mon);
@@ -834,4 +847,141 @@ int
 virCHMonitorResumeVM(virCHMonitor *mon)
 {
     return virCHMonitorPutNoContent(mon, URL_VM_RESUME);
+}
+
+static void virCHMonitorThreadInfoFree(virCHMonitor *mon) {
+  mon->nthreads = 0;
+  if (mon->threads)
+    VIR_FREE(mon->threads);
+}
+
+static size_t virCHMonitorRefreshThreadInfo(virCHMonitor *mon) {
+  virCHMonitorThreadInfo *info = NULL;
+  g_autofree pid_t *tids = NULL;
+  virDomainObj *vm = mon->vm;
+  size_t ntids = 0;
+  size_t i;
+
+  virCHMonitorThreadInfoFree(mon);
+  if (virProcessGetPids(vm->pid, &ntids, &tids) < 0) {
+    mon->threads = NULL;
+    return 0;
+  }
+  info = g_new0(virCHMonitorThreadInfo, ntids);
+
+  for (i = 0; i < ntids; i++) {
+    g_autofree char *proc = NULL;
+    g_autofree char *data = NULL;
+
+    proc = g_strdup_printf("/proc/%d/task/%d/comm", (int)vm->pid, (int)tids[i]);
+
+    if (virFileReadAll(proc, (1 << 16), &data) < 0) {
+      continue;
+    }
+
+    VIR_INFO("VM PID: %d, TID %d, COMM: %s", (int)vm->pid, (int)tids[i], data);
+    if (STRPREFIX(data, "vcpu")) {
+      int cpuid;
+      if (virStrToLong_i(data + 4, NULL, 0, &cpuid) < 0) {
+        VIR_WARN("Index is not specified correctly");
+        continue;
+      }
+      info[i].type = virCHThreadTypeVcpu;
+      info[i].vcpuInfo.tid = tids[i];
+      info[i].vcpuInfo.online = true;
+      info[i].vcpuInfo.cpuid = cpuid;
+      VIR_INFO("vcpu%d -> tid: %d", cpuid, tids[i]);
+    } else if (STRPREFIX(data, "virtio")) {
+      info[i].type = virCHThreadTypeIO;
+      info[i].ioInfo.tid = tids[i];
+      strncpy(info[i].ioInfo.thrName, data, VIRCH_THREAD_NAME_LEN - 1);
+    } else {
+      info[i].type = virCHThreadTypeEmulator;
+      info[i].emuInfo.tid = tids[i];
+      strncpy(info[i].emuInfo.thrName, data, VIRCH_THREAD_NAME_LEN - 1);
+    }
+    mon->nthreads++;
+  }
+
+  mon->threads = info;
+
+  return mon->nthreads;
+}
+
+/**
+ * virCHMonitorGetThreadInfo:
+ * @mon: Pointer to the monitor
+ * @refresh: Refresh thread info or not
+ *
+ * Retrive thread info and store to @threads
+ *
+ * Returns count of threads on success.
+ */
+size_t virCHMonitorGetThreadInfo(virCHMonitor *mon, bool refresh,
+                                 virCHMonitorThreadInfo **threads) {
+  int nthreads = 0;
+
+  if (refresh)
+    nthreads = virCHMonitorRefreshThreadInfo(mon);
+
+  *threads = mon->threads;
+
+  return nthreads;
+}
+
+/**
+ * virCHMonitorGetIOThreads:
+ * @mon: Pointer to the monitor
+ * @iothreads: Location to return array of IOThreadInfo data
+ *
+ * Retrieve the list of iothreads defined/running for the machine
+ *
+ * Returns count of IOThreadInfo structures on success
+ *        -1 on error.
+ */
+int virCHMonitorGetIOThreads(virCHMonitor *mon,
+                             virDomainIOThreadInfo ***iothreads) {
+  size_t nthreads = 0, niothreads = 0;
+  size_t i;
+  virDomainIOThreadInfo **iothreadinfolist = NULL, *iothreadinfo = NULL;
+
+  *iothreads = NULL;
+  nthreads = virCHMonitorRefreshThreadInfo(mon);
+  iothreadinfolist = g_new0(virDomainIOThreadInfo *, nthreads);
+
+  for (i = 0; i < nthreads; i++) {
+    virBitmap *map = NULL;
+    if (mon->threads[i].type == virCHThreadTypeIO) {
+      iothreadinfo = g_new0(virDomainIOThreadInfo, 1);
+      iothreadinfo->iothread_id = mon->threads[i].ioInfo.tid;
+
+      if (!(map = virProcessGetAffinity(iothreadinfo->iothread_id)))
+        goto cleanup;
+
+      if (virBitmapToData(map, &(iothreadinfo->cpumap),
+                          &(iothreadinfo->cpumaplen)) < 0) {
+        virBitmapFree(map);
+        goto cleanup;
+      }
+      virBitmapFree(map);
+      // Append to iothreadinfolist
+      iothreadinfolist[niothreads] = iothreadinfo;
+      niothreads++;
+    }
+  }
+  //
+  VIR_DELETE_ELEMENT_INPLACE(iothreadinfolist, niothreads, nthreads);
+  *iothreads = iothreadinfolist;
+  VIR_DEBUG("niothreads = %ld", niothreads);
+  return niothreads;
+
+  cleanup:
+    if (iothreadinfolist) {
+        for (i = 0; i < niothreads; i++)
+        g_free(iothreadinfolist[i]);
+        g_free(iothreadinfolist);
+    }
+    if (iothreadinfo)
+        g_free(iothreadinfo);
+    return -1;
 }

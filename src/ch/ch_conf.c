@@ -22,6 +22,7 @@
 
 #include "configmake.h"
 #include "viralloc.h"
+#include "virconf.h"
 #include "vircommand.h"
 #include "virlog.h"
 #include "virobject.h"
@@ -166,6 +167,8 @@ virCHDriverConfigNew(bool privileged)
         rundir = virGetUserRuntimeDirectory();
         cfg->stateDir = g_strdup_printf("%s/ch/run", rundir);
     }
+
+    cfg->cgroupControllers = -1; /* Auto detect */
 
     return cfg;
 }

@@ -38,11 +38,19 @@ struct _virCHDriverConfig {
 
     uid_t user;
     gid_t group;
+    int cgroupControllers;
 };
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(virCHDriverConfig, virObjectUnref);
 
 struct _virCHDriver
 {
     virMutex lock;
+
+    bool privileged;
+
+    /* Embedded Mode: Not yet supported */
+    char *embeddedRoot;
 
     /* Require lock to get a reference on the object,
      * lockless access thereafter */

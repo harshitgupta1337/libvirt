@@ -20,6 +20,7 @@
 
 #include <config.h>
 
+#include "ch_cgroup.h"
 #include "ch_conf.h"
 #include "ch_domain.h"
 #include "ch_driver.h"
@@ -30,11 +31,13 @@
 #include "viraccessapicheck.h"
 #include "viralloc.h"
 #include "virbuffer.h"
+#include "virchrdev.h"
 #include "vircommand.h"
 #include "virerror.h"
 #include "virfile.h"
 #include "virlog.h"
 #include "virnetdevtap.h"
+#include "virnuma.h"
 #include "virobject.h"
 #include "virstring.h"
 #include "virtypedparam.h"
@@ -467,7 +470,6 @@ chDomainShutdown(virDomainPtr dom)
     return chDomainShutdownFlags(dom, 0);
 }
 
-
 static int
 chDomainReboot(virDomainPtr dom, unsigned int flags)
 {
@@ -872,6 +874,7 @@ static int chStateInitialize(bool privileged,
     }
 
     ret = VIR_DRV_STATE_INIT_COMPLETE;
+    ch_driver->privileged = privileged;
 
  cleanup:
     if (ret != VIR_DRV_STATE_INIT_COMPLETE)
@@ -879,41 +882,766 @@ static int chStateInitialize(bool privileged,
     return ret;
 }
 
+/* Which features are supported by this driver? */
+static int chConnectSupportsFeature(virConnect *conn, int feature) {
+  if (virConnectSupportsFeatureEnsureACL(conn) < 0)
+    return -1;
+
+  switch ((virDrvFeature)feature) {
+  case VIR_DRV_FEATURE_TYPED_PARAM_STRING:
+    return 1;
+  case VIR_DRV_FEATURE_MIGRATION_V2:
+  case VIR_DRV_FEATURE_MIGRATION_V3:
+  case VIR_DRV_FEATURE_MIGRATION_P2P:
+  case VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION:
+  case VIR_DRV_FEATURE_FD_PASSING:
+  case VIR_DRV_FEATURE_XML_MIGRATABLE:
+  case VIR_DRV_FEATURE_MIGRATION_OFFLINE:
+  case VIR_DRV_FEATURE_MIGRATION_PARAMS:
+  case VIR_DRV_FEATURE_MIGRATION_DIRECT:
+  case VIR_DRV_FEATURE_MIGRATION_V1:
+  case VIR_DRV_FEATURE_PROGRAM_KEEPALIVE:
+  case VIR_DRV_FEATURE_REMOTE:
+  case VIR_DRV_FEATURE_REMOTE_CLOSE_CALLBACK:
+  case VIR_DRV_FEATURE_REMOTE_EVENT_CALLBACK:
+  case VIR_DRV_FEATURE_NETWORK_UPDATE_HAS_CORRECT_ORDER:
+
+  default:
+    return 0;
+  }
+}
+
+static int chDomainGetVcpusFlags(virDomain *dom, unsigned int flags) {
+  virDomainObj *vm;
+  virDomainDef *def;
+  int ret = -1;
+
+  virCheckFlags(VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG |
+                    VIR_DOMAIN_VCPU_MAXIMUM | VIR_DOMAIN_VCPU_GUEST,
+                -1);
+
+  if (!(vm = chDomObjFromDomain(dom)))
+    return -1;
+
+  if (virDomainGetVcpusFlagsEnsureACL(dom->conn, vm->def, flags) < 0)
+    goto cleanup;
+
+  if (!(def = virDomainObjGetOneDef(vm, flags)))
+    goto cleanup;
+
+  if (flags & VIR_DOMAIN_VCPU_MAXIMUM)
+    ret = virDomainDefGetVcpusMax(def);
+  else
+    ret = virDomainDefGetVcpus(def);
+
+  cleanup:
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
+static int chDomainGetMaxVcpus(virDomain *dom) {
+  return chDomainGetVcpusFlags(
+      dom, (VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_VCPU_MAXIMUM));
+}
+
+static int chDomainGetVcpuPinInfo(virDomain *dom, int ncpumaps,
+                                  unsigned char *cpumaps, int maplen,
+                                  unsigned int flags) {
+  virDomainObj *vm = NULL;
+  virDomainDef *def;
+  bool live;
+  int ret = -1;
+  g_autoptr(virBitmap) hostcpus = NULL;
+  virBitmap *autoCpuset = NULL;
+
+  virCheckFlags(VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG, -1);
+
+  if (!(vm = chDomObjFromDomain(dom)))
+    goto cleanup;
+
+  if (virDomainGetVcpuPinInfoEnsureACL(dom->conn, vm->def) < 0)
+    goto cleanup;
+
+  if (!(def = virDomainObjGetOneDefState(vm, flags, &live)))
+    goto cleanup;
+
+  if (!(hostcpus = virHostCPUGetAvailableCPUsBitmap()))
+    goto cleanup;
+
+  if (live)
+    autoCpuset = CH_DOMAIN_PRIVATE(vm)->autoCpuset;
+
+  ret = virDomainDefGetVcpuPinInfoHelper(def, maplen, ncpumaps, cpumaps,
+                                         hostcpus, autoCpuset);
+  cleanup:
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
+static int chNodeGetCPUMap(virConnect *conn, unsigned char **cpumap,
+                           unsigned int *online, unsigned int flags) {
+  if (virNodeGetCPUMapEnsureACL(conn) < 0)
+    return -1;
+
+  return virHostCPUGetMap(cpumap, online, flags);
+}
+
+static int chDomainHelperGetVcpus(virDomainObj *vm, virVcpuInfo *info,
+                                  unsigned long long *cpuwait, int maxinfo,
+                                  unsigned char *cpumaps, int maplen) {
+  size_t ncpuinfo = 0;
+  size_t i;
+
+  if (maxinfo == 0)
+    return 0;
+
+  if (!virCHDomainHasVcpuPids(vm)) {
+    virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                   _("cpu affinity is not supported"));
+    return -1;
+  }
+
+  if (info)
+    memset(info, 0, sizeof(*info) * maxinfo);
+
+  if (cpumaps)
+    memset(cpumaps, 0, sizeof(*cpumaps) * maxinfo);
+
+  for (i = 0; i < virDomainDefGetVcpusMax(vm->def) && ncpuinfo < maxinfo; i++) {
+    virDomainVcpuDef *vcpu = virDomainDefGetVcpu(vm->def, i);
+    pid_t vcpupid = virCHDomainGetVcpuPid(vm, i);
+    virVcpuInfo *vcpuinfo = info + ncpuinfo;
+
+    if (!vcpu->online)
+      continue;
+
+    if (info) {
+      vcpuinfo->number = i;
+      vcpuinfo->state = VIR_VCPU_RUNNING;
+      if (virProcessGetStatInfo(&vcpuinfo->cpuTime, &vcpuinfo->cpu, NULL,
+                                vm->pid, vcpupid) < 0) {
+        virReportSystemError(errno, "%s",
+                             _("cannot get vCPU placement & pCPU time"));
+        return -1;
+      }
+    }
+
+    if (cpumaps) {
+      unsigned char *cpumap = VIR_GET_CPUMAP(cpumaps, maplen, ncpuinfo);
+      virBitmap *map = NULL;
+
+      if (!(map = virProcessGetAffinity(vcpupid)))
+        return -1;
+
+      virBitmapToDataBuf(map, cpumap, maplen);
+      virBitmapFree(map);
+    }
+
+    if (cpuwait) {
+      if (virProcessGetSchedInfo(&(cpuwait[ncpuinfo]), vm->pid, vcpupid) < 0)
+        return -1;
+    }
+
+    ncpuinfo++;
+  }
+
+  return ncpuinfo;
+}
+
+static int chDomainGetVcpus(virDomain *dom, virVcpuInfo *info, int maxinfo,
+                            unsigned char *cpumaps, int maplen) {
+  virDomainObj *vm;
+  int ret = -1;
+
+  if (!(vm = chDomObjFromDomain(dom)))
+    goto cleanup;
+
+  if (virDomainOpenConsoleEnsureACL(dom->conn, vm->def) < 0)
+    goto cleanup;
+
+  if (virDomainObjCheckActive(vm) < 0) {
+    virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                   _("cannot retrieve vcpu information for inactive domain"));
+    goto cleanup;
+  }
+
+  ret = chDomainHelperGetVcpus(vm, info, NULL, maxinfo, cpumaps, maplen);
+
+  cleanup:
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
+static int chDomainPinVcpuLive(virDomainObj *vm, virDomainDef *def, int vcpu,
+                               virCHDriver *driver, virCHDriverConfig *cfg,
+                               virBitmap *cpumap) {
+  virBitmap *tmpmap = NULL;
+  virDomainVcpuDef *vcpuinfo;
+  virCHDomainObjPrivate *priv = vm->privateData;
+  virCgroup *cgroup_vcpu = NULL;
+  g_autofree char *str = NULL;
+  int ret = -1;
+
+  if (!virCHDomainHasVcpuPids(vm)) {
+    virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                   _("cpu affinity is not supported"));
+    goto cleanup;
+  }
+
+  if (!(vcpuinfo = virDomainDefGetVcpu(def, vcpu))) {
+    virReportError(VIR_ERR_INVALID_ARG,
+                   _("vcpu %d is out of range of live cpu count %d"), vcpu,
+                   virDomainDefGetVcpusMax(def));
+    goto cleanup;
+  }
+
+  if (!(tmpmap = virBitmapNewCopy(cpumap)))
+    goto cleanup;
+
+  if (!(str = virBitmapFormat(cpumap)))
+    goto cleanup;
+
+  if (vcpuinfo->online) {
+    /* Configure the corresponding cpuset cgroup before set affinity. */
+    if (virCgroupHasController(priv->cgroup, VIR_CGROUP_CONTROLLER_CPUSET)) {
+      if (virCgroupNewThread(priv->cgroup, VIR_CGROUP_THREAD_VCPU, vcpu, false,
+                             &cgroup_vcpu) < 0)
+        goto cleanup;
+      if (chSetupCgroupCpusetCpus(cgroup_vcpu, cpumap) < 0)
+        goto cleanup;
+    }
+
+    if (virProcessSetAffinity(virCHDomainGetVcpuPid(vm, vcpu), cpumap, false) <
+        0)
+      goto cleanup;
+  }
+
+  virBitmapFree(vcpuinfo->cpumask);
+  vcpuinfo->cpumask = tmpmap;
+  tmpmap = NULL;
+
+  if (virDomainObjSave(vm, driver->xmlopt, cfg->stateDir) < 0)
+    goto cleanup;
+
+  ret = 0;
+
+  cleanup:
+    virBitmapFree(tmpmap);
+    virCgroupFree(cgroup_vcpu);
+    return ret;
+}
+
+static int chDomainPinVcpuFlags(virDomain *dom, unsigned int vcpu,
+                                unsigned char *cpumap, int maplen,
+                                unsigned int flags) {
+  virCHDriver *driver = dom->conn->privateData;
+  virDomainObj *vm;
+  virDomainDef *def;
+  virDomainDef *persistentDef;
+  int ret = -1;
+  virBitmap *pcpumap = NULL;
+  virDomainVcpuDef *vcpuinfo = NULL;
+  g_autoptr(virCHDriverConfig) cfg = NULL;
+
+  virCheckFlags(VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG, -1);
+
+  cfg = virCHDriverGetConfig(driver);
+
+  if (!(vm = virCHDomainObjFromDomain(dom)))
+    goto cleanup;
+
+  if (virDomainPinVcpuFlagsEnsureACL(dom->conn, vm->def, flags) < 0)
+    goto cleanup;
+
+  if (virCHDomainObjBeginJob(vm, CH_JOB_MODIFY) < 0)
+    goto cleanup;
+
+  if (virDomainObjGetDefs(vm, flags, &def, &persistentDef) < 0)
+    goto endjob;
+
+  if (persistentDef && !(vcpuinfo = virDomainDefGetVcpu(persistentDef, vcpu))) {
+    virReportError(VIR_ERR_INVALID_ARG,
+                   _("vcpu %d is out of range of persistent cpu count %d"),
+                   vcpu, virDomainDefGetVcpus(persistentDef));
+    goto endjob;
+  }
+
+  if (!(pcpumap = virBitmapNewData(cpumap, maplen)))
+    goto endjob;
+
+  if (virBitmapIsAllClear(pcpumap)) {
+    virReportError(VIR_ERR_INVALID_ARG, "%s", _("Empty cpu list for pinning"));
+    goto endjob;
+  }
+
+  if (def && chDomainPinVcpuLive(vm, def, vcpu, driver, cfg, pcpumap) < 0)
+    goto endjob;
+
+  if (persistentDef) {
+    virBitmapFree(vcpuinfo->cpumask);
+    vcpuinfo->cpumask = pcpumap;
+    pcpumap = NULL;
+
+    // ret = virDomainDefSave(persistentDef, driver->xmlopt, cfg->configDir);
+    goto endjob;
+  }
+
+  ret = 0;
+
+  endjob:
+    virCHDomainObjEndJob(vm);
+
+  cleanup:
+    virDomainObjEndAPI(&vm);
+    virBitmapFree(pcpumap);
+    return ret;
+}
+
+static int chDomainPinVcpu(virDomain *dom, unsigned int vcpu,
+                           unsigned char *cpumap, int maplen) {
+  return chDomainPinVcpuFlags(dom, vcpu, cpumap, maplen,
+                              VIR_DOMAIN_AFFECT_LIVE);
+}
+
+static int chDomainGetEmulatorPinInfo(virDomain *dom, unsigned char *cpumaps,
+                                      int maplen, unsigned int flags) {
+  virDomainObj *vm = NULL;
+  virDomainDef *def;
+  virCHDomainObjPrivate *priv;
+  bool live;
+  int ret = -1;
+  virBitmap *cpumask = NULL;
+  g_autoptr(virBitmap) bitmap = NULL;
+  virBitmap *autoCpuset = NULL;
+
+  virCheckFlags(VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG, -1);
+
+  if (!(vm = chDomObjFromDomain(dom)))
+    goto cleanup;
+
+  if (virDomainGetEmulatorPinInfoEnsureACL(dom->conn, vm->def) < 0)
+    goto cleanup;
+
+  if (!(def = virDomainObjGetOneDefState(vm, flags, &live)))
+    goto cleanup;
+
+  if (live) {
+    priv = vm->privateData;
+    autoCpuset = priv->autoCpuset;
+  }
+  if (def->cputune.emulatorpin) {
+    cpumask = def->cputune.emulatorpin;
+  } else if (def->cpumask) {
+    cpumask = def->cpumask;
+  } else if (vm->def->placement_mode == VIR_DOMAIN_CPU_PLACEMENT_MODE_AUTO &&
+             autoCpuset) {
+    cpumask = autoCpuset;
+  } else {
+    if (!(bitmap = virHostCPUGetAvailableCPUsBitmap()))
+      goto cleanup;
+    cpumask = bitmap;
+  }
+
+  virBitmapToDataBuf(cpumask, cpumaps, maplen);
+
+  ret = 1;
+
+  cleanup:
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
+static int chDomainPinEmulator(virDomain *dom, unsigned char *cpumap,
+                               int maplen, unsigned int flags) {
+  virCHDriver *driver = dom->conn->privateData;
+  virDomainObj *vm;
+  virCgroup *cgroup_emulator = NULL;
+  virDomainDef *def;
+  virDomainDef *persistentDef;
+  int ret = -1;
+  virCHDomainObjPrivate *priv;
+  virBitmap *pcpumap = NULL;
+  g_autoptr(virCHDriverConfig) cfg = NULL;
+  g_autofree char *str = NULL;
+  virTypedParameter *eventParams = NULL;
+  int eventNparams = 0;
+  int eventMaxparams = 0;
+
+  virCheckFlags(VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG, -1);
+
+  cfg = virCHDriverGetConfig(driver);
+
+  if (!(vm = chDomObjFromDomain(dom)))
+    goto cleanup;
+
+  if (virDomainPinEmulatorEnsureACL(dom->conn, vm->def, flags) < 0)
+    goto cleanup;
+
+  if (virCHDomainObjBeginJob(vm, CH_JOB_MODIFY) < 0)
+    goto cleanup;
+
+  if (virDomainObjGetDefs(vm, flags, &def, &persistentDef) < 0)
+    goto endjob;
+
+  priv = vm->privateData;
+
+  if (!(pcpumap = virBitmapNewData(cpumap, maplen)))
+    goto endjob;
+
+  if (virBitmapIsAllClear(pcpumap)) {
+    virReportError(VIR_ERR_INVALID_ARG, "%s", _("Empty cpu list for pinning"));
+    goto endjob;
+  }
+
+  if (def) {
+    if (virCgroupHasController(priv->cgroup, VIR_CGROUP_CONTROLLER_CPUSET)) {
+      if (virCgroupNewThread(priv->cgroup, VIR_CGROUP_THREAD_EMULATOR, 0, false,
+                             &cgroup_emulator) < 0)
+        goto endjob;
+
+      if (chSetupCgroupCpusetCpus(cgroup_emulator, pcpumap) < 0) {
+        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                       _("failed to set cpuset.cpus in cgroup"
+                         " for emulator threads"));
+        goto endjob;
+      }
+    }
+
+    if (virProcessSetAffinity(vm->pid, pcpumap, false) < 0)
+      goto endjob;
+
+    virBitmapFree(def->cputune.emulatorpin);
+    def->cputune.emulatorpin = NULL;
+
+    if (!(def->cputune.emulatorpin = virBitmapNewCopy(pcpumap)))
+      goto endjob;
+
+    if (virDomainObjSave(vm, driver->xmlopt, cfg->stateDir) < 0)
+      goto endjob;
+
+    str = virBitmapFormat(pcpumap);
+    if (virTypedParamsAddString(&eventParams, &eventNparams, &eventMaxparams,
+                                VIR_DOMAIN_TUNABLE_CPU_EMULATORPIN, str) < 0)
+      goto endjob;
+  }
+
+  ret = 0;
+
+  endjob:
+    virCHDomainObjEndJob(vm);
+
+  cleanup:
+    if (cgroup_emulator)
+      virCgroupFree(cgroup_emulator);
+    virBitmapFree(pcpumap);
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
+#define CH_NB_NUMA_PARAM 2
+
+static int chDomainGetNumaParameters(virDomain *dom, virTypedParameter *params,
+                                     int *nparams, unsigned int flags) {
+  size_t i;
+  virDomainObj *vm = NULL;
+  virDomainNumatuneMemMode tmpmode = VIR_DOMAIN_NUMATUNE_MEM_STRICT;
+  virCHDomainObjPrivate *priv;
+  g_autofree char *nodeset = NULL;
+  int ret = -1;
+  virDomainDef *def = NULL;
+  bool live = false;
+  virBitmap *autoNodeset = NULL;
+
+  virCheckFlags(VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG |
+                    VIR_TYPED_PARAM_STRING_OKAY,
+                -1);
+
+  if (!(vm = virCHDomainObjFromDomain(dom)))
+    return -1;
+  priv = vm->privateData;
+
+  if (virDomainGetNumaParametersEnsureACL(dom->conn, vm->def) < 0)
+    goto cleanup;
+
+  if (!(def = virDomainObjGetOneDefState(vm, flags, &live)))
+    goto cleanup;
+
+  if (live)
+    autoNodeset = priv->autoNodeset;
+
+  if ((*nparams) == 0) {
+    *nparams = CH_NB_NUMA_PARAM;
+    ret = 0;
+    goto cleanup;
+  }
+
+  for (i = 0; i < CH_NB_NUMA_PARAM && i < *nparams; i++) {
+    virMemoryParameter *param = &params[i];
+
+    switch (i) {
+    case 0: /* fill numa mode here */
+      ignore_value(virDomainNumatuneGetMode(def->numa, -1, &tmpmode));
+
+      if (virTypedParameterAssign(param, VIR_DOMAIN_NUMA_MODE,
+                                  VIR_TYPED_PARAM_INT, tmpmode) < 0)
+        goto cleanup;
+
+      break;
+
+    case 1: /* fill numa nodeset here */
+      nodeset = virDomainNumatuneFormatNodeset(def->numa, autoNodeset, -1);
+
+      if (!nodeset ||
+          virTypedParameterAssign(param, VIR_DOMAIN_NUMA_NODESET,
+                                  VIR_TYPED_PARAM_STRING, nodeset) < 0)
+        goto cleanup;
+
+      nodeset = NULL;
+      break;
+
+    /* coverity[dead_error_begin] */
+    default:
+      break;
+      /* should not hit here */
+    }
+  }
+
+  if (*nparams > CH_NB_NUMA_PARAM)
+    *nparams = CH_NB_NUMA_PARAM;
+  ret = 0;
+
+  cleanup:
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
+static int chDomainSetNumaParamsLive(virDomainObj *vm, virBitmap *nodeset) {
+  virCgroup *cgroup_temp = NULL;
+  virCHDomainObjPrivate *priv = vm->privateData;
+  g_autofree char *nodeset_str = NULL;
+  virDomainNumatuneMemMode mode;
+  size_t i = 0;
+  int ret = -1;
+
+  if (virDomainNumatuneGetMode(vm->def->numa, -1, &mode) == 0 &&
+      mode != VIR_DOMAIN_NUMATUNE_MEM_STRICT) {
+    virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                   _("change of nodeset for running domain "
+                     "requires strict numa mode"));
+    goto cleanup;
+  }
+
+  if (!virNumaNodesetIsAvailable(nodeset))
+    goto cleanup;
+
+  /* Ensure the cpuset string is formatted before passing to cgroup */
+  if (!(nodeset_str = virBitmapFormat(nodeset)))
+    goto cleanup;
+
+  if (virCgroupNewThread(priv->cgroup, VIR_CGROUP_THREAD_EMULATOR, 0, false,
+                         &cgroup_temp) < 0 ||
+      virCgroupSetCpusetMems(cgroup_temp, nodeset_str) < 0)
+    goto cleanup;
+  virCgroupFree(cgroup_temp);
+
+  for (i = 0; i < virDomainDefGetVcpusMax(vm->def); i++) {
+    virDomainVcpuDef *vcpu = virDomainDefGetVcpu(vm->def, i);
+
+    if (!vcpu->online)
+      continue;
+
+    if (virCgroupNewThread(priv->cgroup, VIR_CGROUP_THREAD_VCPU, i, false,
+                           &cgroup_temp) < 0 ||
+        virCgroupSetCpusetMems(cgroup_temp, nodeset_str) < 0)
+      goto cleanup;
+    virCgroupFree(cgroup_temp);
+  }
+
+  for (i = 0; i < vm->def->niothreadids; i++) {
+    if (virCgroupNewThread(priv->cgroup, VIR_CGROUP_THREAD_IOTHREAD,
+                           vm->def->iothreadids[i]->iothread_id, false,
+                           &cgroup_temp) < 0 ||
+        virCgroupSetCpusetMems(cgroup_temp, nodeset_str) < 0)
+      goto cleanup;
+    virCgroupFree(cgroup_temp);
+  }
+
+  /* set nodeset for root cgroup */
+  if (virCgroupSetCpusetMems(priv->cgroup, nodeset_str) < 0)
+    goto cleanup;
+
+  ret = 0;
+  cleanup:
+    virCgroupFree(cgroup_temp);
+
+  return ret;
+}
+
+static int chDomainSetNumaParameters(virDomain *dom, virTypedParameter *params,
+                                     int nparams, unsigned int flags) {
+  virCHDriver *driver = dom->conn->privateData;
+  size_t i;
+  virDomainDef *def;
+  virDomainDef *persistentDef;
+  virDomainObj *vm = NULL;
+  int ret = -1;
+  g_autoptr(virCHDriverConfig) cfg = NULL;
+  virCHDomainObjPrivate *priv;
+  virBitmap *nodeset = NULL;
+  virDomainNumatuneMemMode config_mode;
+  int mode = -1;
+
+  virCheckFlags(VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG, -1);
+
+  if (virTypedParamsValidate(params, nparams, VIR_DOMAIN_NUMA_MODE,
+                             VIR_TYPED_PARAM_INT, VIR_DOMAIN_NUMA_NODESET,
+                             VIR_TYPED_PARAM_STRING, NULL) < 0)
+    return -1;
+
+  if (!(vm = virCHDomainObjFromDomain(dom)))
+    return -1;
+
+  priv = vm->privateData;
+  cfg = virCHDriverGetConfig(driver);
+
+  if (virDomainSetNumaParametersEnsureACL(dom->conn, vm->def, flags) < 0)
+    goto cleanup;
+
+  for (i = 0; i < nparams; i++) {
+    virTypedParameter *param = &params[i];
+
+    if (STREQ(param->field, VIR_DOMAIN_NUMA_MODE)) {
+      mode = param->value.i;
+
+      if (mode < 0 || mode >= VIR_DOMAIN_NUMATUNE_MEM_LAST) {
+        virReportError(VIR_ERR_INVALID_ARG,
+                       _("unsupported numatune mode: '%d'"), mode);
+        goto cleanup;
+      }
+
+    } else if (STREQ(param->field, VIR_DOMAIN_NUMA_NODESET)) {
+      if (virBitmapParse(param->value.s, &nodeset, VIR_DOMAIN_CPUMASK_LEN) < 0)
+        goto cleanup;
+
+      if (virBitmapIsAllClear(nodeset)) {
+        virReportError(VIR_ERR_OPERATION_INVALID,
+                       _("Invalid nodeset of 'numatune': %s"), param->value.s);
+        goto cleanup;
+      }
+    }
+  }
+
+  if (virCHDomainObjBeginJob(vm, CH_JOB_MODIFY) < 0)
+    goto cleanup;
+
+  if (virDomainObjGetDefs(vm, flags, &def, &persistentDef) < 0)
+    goto endjob;
+
+  if (def) {
+    if (!driver->privileged) {
+      virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
+                     _("NUMA tuning is not available in session mode"));
+      goto endjob;
+    }
+
+    if (!virCgroupHasController(priv->cgroup, VIR_CGROUP_CONTROLLER_CPUSET)) {
+      virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                     _("cgroup cpuset controller is not mounted"));
+      goto endjob;
+    }
+
+    if (mode != -1 &&
+        virDomainNumatuneGetMode(def->numa, -1, &config_mode) == 0 &&
+        config_mode != mode) {
+      virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                     _("can't change numatune mode for running domain"));
+      goto endjob;
+    }
+
+    if (nodeset && chDomainSetNumaParamsLive(vm, nodeset) < 0)
+      goto endjob;
+
+    if (virDomainNumatuneSet(def->numa,
+                             def->placement_mode ==
+                                 VIR_DOMAIN_CPU_PLACEMENT_MODE_STATIC,
+                             -1, mode, nodeset) < 0)
+      goto endjob;
+
+    if (virDomainObjSave(vm, driver->xmlopt, cfg->stateDir) < 0)
+      goto endjob;
+  }
+
+  /*
+  if (persistentDef) {
+      if (virDomainNumatuneSet(persistentDef->numa,
+                               persistentDef->placement_mode ==
+                               VIR_DOMAIN_CPU_PLACEMENT_MODE_STATIC,
+                               -1, mode, nodeset) < 0)
+          goto endjob;
+
+      if (virDomainDefSave(persistentDef, driver->xmlopt, cfg->configDir) < 0)
+          goto endjob;
+  }
+  */
+
+  ret = 0;
+
+  endjob:
+    virCHDomainObjEndJob(vm);
+
+  cleanup:
+    virBitmapFree(nodeset);
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
 /* Function Tables */
 static virHypervisorDriver chHypervisorDriver = {
     .name = "CH",
     .connectURIProbe = chConnectURIProbe,
-    .connectOpen = chConnectOpen,                           /* 7.5.0 */
-    .connectClose = chConnectClose,                         /* 7.5.0 */
-    .connectGetType = chConnectGetType,                     /* 7.5.0 */
-    .connectGetVersion = chConnectGetVersion,               /* 7.5.0 */
-    .connectGetHostname = chConnectGetHostname,             /* 7.5.0 */
-    .connectNumOfDomains = chConnectNumOfDomains,           /* 7.5.0 */
-    .connectListAllDomains = chConnectListAllDomains,       /* 7.5.0 */
-    .connectListDomains = chConnectListDomains,             /* 7.5.0 */
-    .connectGetCapabilities = chConnectGetCapabilities,     /* 7.5.0 */
-    .domainCreateXML = chDomainCreateXML,                   /* 7.5.0 */
-    .domainCreate = chDomainCreate,                         /* 7.5.0 */
-    .domainCreateWithFlags = chDomainCreateWithFlags,       /* 7.5.0 */
-    .domainShutdown = chDomainShutdown,                     /* 7.5.0 */
-    .domainShutdownFlags = chDomainShutdownFlags,           /* 7.5.0 */
-    .domainReboot = chDomainReboot,                         /* 7.5.0 */
-    .domainSuspend = chDomainSuspend,                       /* 7.5.0 */
-    .domainResume = chDomainResume,                         /* 7.5.0 */
-    .domainDestroy = chDomainDestroy,                       /* 7.5.0 */
-    .domainDestroyFlags = chDomainDestroyFlags,             /* 7.5.0 */
-    .domainDefineXML = chDomainDefineXML,                   /* 7.5.0 */
-    .domainDefineXMLFlags = chDomainDefineXMLFlags,         /* 7.5.0 */
-    .domainUndefine = chDomainUndefine,                     /* 7.5.0 */
-    .domainUndefineFlags = chDomainUndefineFlags,           /* 7.5.0 */
-    .domainLookupByID = chDomainLookupByID,                 /* 7.5.0 */
-    .domainLookupByUUID = chDomainLookupByUUID,             /* 7.5.0 */
-    .domainLookupByName = chDomainLookupByName,             /* 7.5.0 */
-    .domainGetState = chDomainGetState,                     /* 7.5.0 */
-    .domainGetXMLDesc = chDomainGetXMLDesc,                 /* 7.5.0 */
-    .domainGetInfo = chDomainGetInfo,                       /* 7.5.0 */
-    .domainIsActive = chDomainIsActive,                     /* 7.5.0 */
-    .nodeGetInfo = chNodeGetInfo,                           /* 7.5.0 */
+    .connectOpen = chConnectOpen,                           /* 6.7.0 */
+    .connectClose = chConnectClose,                         /* 6.7.0 */
+    .connectGetType = chConnectGetType,                     /* 6.7.0 */
+    .connectGetVersion = chConnectGetVersion,               /* 6.7.0 */
+    .connectGetHostname = chConnectGetHostname,             /* 6.7.0 */
+    .connectNumOfDomains = chConnectNumOfDomains,           /* 6.7.0 */
+    .connectListAllDomains = chConnectListAllDomains,       /* 6.7.0 */
+    .connectListDomains = chConnectListDomains,             /* 6.7.0 */
+    .connectGetCapabilities = chConnectGetCapabilities,     /* 6.7.0 */
+    .connectSupportsFeature = chConnectSupportsFeature,     /* 6.7.0 */
+    .domainCreateXML = chDomainCreateXML,                   /* 6.7.0 */
+    .domainCreate = chDomainCreate,                         /* 6.7.0 */
+    .domainCreateWithFlags = chDomainCreateWithFlags,       /* 6.7.0 */
+    .domainShutdown = chDomainShutdown,                     /* 6.7.0 */
+    .domainShutdownFlags = chDomainShutdownFlags,           /* 6.7.0 */
+    .domainReboot = chDomainReboot,                         /* 6.7.0 */
+    .domainSuspend = chDomainSuspend,                       /* 6.7.0 */
+    .domainResume = chDomainResume,                         /* 6.7.0 */
+    .domainDestroy = chDomainDestroy,                       /* 6.7.0 */
+    .domainDestroyFlags = chDomainDestroyFlags,             /* 6.7.0 */
+    .domainDefineXML = chDomainDefineXML,                   /* 6.7.0 */
+    .domainDefineXMLFlags = chDomainDefineXMLFlags,         /* 6.7.0 */
+    .domainUndefine = chDomainUndefine,                     /* 6.7.0 */
+    .domainUndefineFlags = chDomainUndefineFlags,           /* 6.7.0 */
+    .domainLookupByID = chDomainLookupByID,                 /* 6.7.0 */
+    .domainLookupByUUID = chDomainLookupByUUID,             /* 6.7.0 */
+    .domainLookupByName = chDomainLookupByName,             /* 6.7.0 */
+    .domainGetState = chDomainGetState,                     /* 6.7.0 */
+    .domainGetXMLDesc = chDomainGetXMLDesc,                 /* 6.7.0 */
+    .domainGetInfo = chDomainGetInfo,                       /* 6.7.0 */
+    .domainIsActive = chDomainIsActive,                     /* 6.7.0 */
+    .nodeGetInfo = chNodeGetInfo,                           /* 6.7.0 */
+    .domainGetVcpus = chDomainGetVcpus,                     /* 6.7.0 */
+    .domainGetVcpusFlags = chDomainGetVcpusFlags,           /* 6.7.0 */
+    .domainGetMaxVcpus = chDomainGetMaxVcpus,               /* 6.7.0 */
+    .domainGetVcpuPinInfo = chDomainGetVcpuPinInfo,         /* 6.7.0 */
+    .domainPinVcpu = chDomainPinVcpu,                       /* 6.7.0 */
+    .domainPinVcpuFlags = chDomainPinVcpuFlags,             /* 6.7.0 */
+    .domainPinEmulator = chDomainPinEmulator,               /* 6.7.0 */
+    .domainGetEmulatorPinInfo = chDomainGetEmulatorPinInfo, /* 6.7.0 */
+    .nodeGetCPUMap = chNodeGetCPUMap,                       /* 6.7.0 */
+    .domainSetNumaParameters = chDomainSetNumaParameters,   /* 6.7.0 */
+    .domainGetNumaParameters = chDomainGetNumaParameters,   /* 6.7.0 */
 };
 
 static virConnectDriver chConnectDriver = {

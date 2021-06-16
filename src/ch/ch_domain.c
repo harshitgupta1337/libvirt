@@ -21,8 +21,11 @@
 #include <config.h>
 
 #include "ch_domain.h"
+#include "datatypes.h"
+#include "domain_driver.h"
 #include "viralloc.h"
 #include "virlog.h"
+#include "virsystemd.h"
 #include "virtime.h"
 
 #define VIR_FROM_THIS VIR_FROM_CH
@@ -158,11 +161,6 @@ virCHDomainObjPrivateFree(void *data)
     g_free(priv);
 }
 
-virDomainXMLPrivateDataCallbacks virCHDriverPrivateDataCallbacks = {
-    .alloc = virCHDomainObjPrivateAlloc,
-    .free = virCHDomainObjPrivateFree,
-};
-
 static int
 virCHDomainDefPostParseBasic(virDomainDef *def,
                              void *opaque G_GNUC_UNUSED)
@@ -178,6 +176,44 @@ virCHDomainDefPostParseBasic(virDomainDef *def,
 
     return 0;
 }
+
+static virClass *virCHDomainVcpuPrivateClass;
+static void virCHDomainVcpuPrivateDispose(void *obj);
+
+static int virCHDomainVcpuPrivateOnceInit(void) {
+  if (!VIR_CLASS_NEW(virCHDomainVcpuPrivate, virClassForObject()))
+    return -1;
+
+  return 0;
+}
+
+VIR_ONCE_GLOBAL_INIT(virCHDomainVcpuPrivate);
+
+static virObject *virCHDomainVcpuPrivateNew(void) {
+  virCHDomainVcpuPrivate *priv;
+
+  if (virCHDomainVcpuPrivateInitialize() < 0)
+    return NULL;
+
+  if (!(priv = virObjectNew(virCHDomainVcpuPrivateClass)))
+    return NULL;
+
+  return (virObject *)priv;
+}
+
+static void virCHDomainVcpuPrivateDispose(void *obj) {
+  virCHDomainVcpuPrivate *priv = obj;
+
+  priv->tid = 0;
+
+  return;
+}
+
+virDomainXMLPrivateDataCallbacks virCHDriverPrivateDataCallbacks = {
+    .alloc = virCHDomainObjPrivateAlloc,
+    .free = virCHDomainObjPrivateFree,
+    .vcpuNew = virCHDomainVcpuPrivateNew,
+};
 
 static int
 virCHDomainDefPostParse(virDomainDef *def,
@@ -201,3 +237,105 @@ virDomainDefParserConfig virCHDriverDomainDefParserConfig = {
     .domainPostParseBasicCallback = virCHDomainDefPostParseBasic,
     .domainPostParseCallback = virCHDomainDefPostParse,
 };
+
+virCHMonitor *virCHDomainGetMonitor(virDomainObj *vm) {
+  return CH_DOMAIN_PRIVATE(vm)->monitor;
+}
+
+int virCHDomainRefreshThreadInfo(virDomainObj *vm) {
+  size_t maxvcpus = virDomainDefGetVcpusMax(vm->def);
+  virCHMonitorThreadInfo *info = NULL;
+  size_t nthreads, ncpus = 0;
+  size_t i;
+
+  nthreads = virCHMonitorGetThreadInfo(virCHDomainGetMonitor(vm), true, &info);
+
+  for (i = 0; i < nthreads; i++) {
+    virCHDomainVcpuPrivate *vcpupriv;
+    virDomainVcpuDef *vcpu;
+    virCHMonitorCPUInfo *vcpuInfo;
+
+    if (info[i].type != virCHThreadTypeVcpu)
+      continue;
+
+    // TODO: hotplug support
+    vcpuInfo = &info[i].vcpuInfo;
+    vcpu = virDomainDefGetVcpu(vm->def, vcpuInfo->cpuid);
+    vcpupriv = CH_DOMAIN_VCPU_PRIVATE(vcpu);
+    vcpupriv->tid = vcpuInfo->tid;
+    ncpus++;
+  }
+
+  // TODO: Remove the warning when hotplug is implemented.
+  if (ncpus != maxvcpus)
+    VIR_WARN("Mismatch in the number of cpus, expected: %ld, actual: %ld",
+             maxvcpus, ncpus);
+
+  return 0;
+}
+
+pid_t virCHDomainGetVcpuPid(virDomainObj *vm, unsigned int vcpuid) {
+  virDomainVcpuDef *vcpu = virDomainDefGetVcpu(vm->def, vcpuid);
+  return CH_DOMAIN_VCPU_PRIVATE(vcpu)->tid;
+}
+
+bool virCHDomainHasVcpuPids(virDomainObj *vm) {
+  size_t i;
+  size_t maxvcpus = virDomainDefGetVcpusMax(vm->def);
+  virDomainVcpuDef *vcpu;
+
+  for (i = 0; i < maxvcpus; i++) {
+    vcpu = virDomainDefGetVcpu(vm->def, i);
+
+    if (CH_DOMAIN_VCPU_PRIVATE(vcpu)->tid > 0)
+      return true;
+  }
+
+  return false;
+}
+
+char *virCHDomainGetMachineName(virDomainObj *vm) {
+  virCHDomainObjPrivate *priv = CH_DOMAIN_PRIVATE(vm);
+  virCHDriver *driver = priv->driver;
+  char *ret = NULL;
+
+  if (vm->pid > 0) {
+    ret = virSystemdGetMachineNameByPID(vm->pid);
+    if (!ret)
+      virResetLastError();
+  }
+
+  if (!ret)
+    ret = virDomainDriverGenerateMachineName("ch", driver->embeddedRoot,
+                                             vm->def->id, vm->def->name,
+                                             driver->privileged);
+
+  return ret;
+}
+
+/**
+ * virCHDomainObjFromDomain:
+ * @domain: Domain pointer that has to be looked up
+ *
+ * This function looks up @domain and returns the appropriate virDomainObj
+ * that has to be released by calling virDomainObjEndAPI().
+ *
+ * Returns the domain object with incremented reference counter which is locked
+ * on success, NULL otherwise.
+ */
+virDomainObj *virCHDomainObjFromDomain(virDomain *domain) {
+  virDomainObj *vm;
+  virCHDriver *driver = domain->conn->privateData;
+  char uuidstr[VIR_UUID_STRING_BUFLEN];
+
+  vm = virDomainObjListFindByUUID(driver->domains, domain->uuid);
+  if (!vm) {
+    virUUIDFormat(domain->uuid, uuidstr);
+    virReportError(VIR_ERR_NO_DOMAIN,
+                   _("no domain with matching uuid '%s' (%s)"), uuidstr,
+                   domain->name);
+    return NULL;
+  }
+
+  return vm;
+}
