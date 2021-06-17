@@ -57,8 +57,8 @@ virFormatIntPretty(unsigned long long val,
 int virDiskNameParse(const char *name, int *disk, int *partition);
 int virDiskNameToIndex(const char* str);
 char *virIndexToDiskName(unsigned int idx, const char *prefix);
-
 /* No-op workarounds for functionality missing in mingw.  */
+/*
 #ifndef WITH_GETUID
 static inline int getuid(void)
 { return 0; }
@@ -78,7 +78,7 @@ static inline int getgid(void)
 static inline int getegid(void)
 { return 0; }
 #endif
-
+*/
 #ifdef FUNC_PTHREAD_SIGMASK_BROKEN
 # undef pthread_sigmask
 static inline int pthread_sigmask(int how,
