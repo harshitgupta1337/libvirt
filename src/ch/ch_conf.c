@@ -82,6 +82,12 @@ virCaps *virCHDriverCapsInit(void)
                                       0,
                                       NULL) == NULL)
         goto cleanup;
+    if (virCapabilitiesAddGuestDomain(guest,
+                                      VIR_DOMAIN_VIRT_CH,
+                                      NULL,
+                                      NULL,
+                                      0,
+                                      NULL) == NULL)
 
     return caps;
 
