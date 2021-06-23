@@ -626,9 +626,11 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
         goto cleanup;
     }
 
-    virCommandAddArg(cmd, "--api-socket");
-    virCommandAddArgFormat(cmd, "fd=%d", socket_fd);
-    virCommandPassFD(cmd, socket_fd, VIR_COMMAND_PASS_FD_CLOSE_PARENT);
+  virCommandAddArg(cmd, "--api-socket");
+  virCommandAddArgFormat(cmd, "fd=%d", socket_fd);
+  virCommandAddArgList(cmd, "-vvv", "--log-file", "/var/log/libvirt/ch.log",
+                       NULL);
+  virCommandPassFD(cmd, socket_fd, VIR_COMMAND_PASS_FD_CLOSE_PARENT);
 
     /* launch Cloud-Hypervisor socket */
     if (virCommandRunAsync(cmd, &mon->pid) < 0)
