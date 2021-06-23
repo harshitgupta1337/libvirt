@@ -22,8 +22,8 @@
 
 #include "configmake.h"
 #include "viralloc.h"
-#include "virconf.h"
 #include "vircommand.h"
+#include "virconf.h"
 #include "virlog.h"
 #include "virobject.h"
 #include "virstring.h"
@@ -101,138 +101,128 @@ virCaps *virCHDriverCapsInit(void)
  *
  * Returns: a reference to a virCaps instance or NULL
  */
-virCaps *virCHDriverGetCapabilities(virCHDriver *driver,
-                                      bool refresh)
-{
-    virCaps *ret;
-    if (refresh) {
-        virCaps *caps = NULL;
-        if ((caps = virCHDriverCapsInit()) == NULL)
-            return NULL;
+virCaps *virCHDriverGetCapabilities(virCHDriver *driver, bool refresh) {
+  virCaps *ret;
+  if (refresh) {
+    virCaps *caps = NULL;
+    if ((caps = virCHDriverCapsInit()) == NULL)
+      return NULL;
 
-        chDriverLock(driver);
-        virObjectUnref(driver->caps);
-        driver->caps = caps;
-    } else {
-        chDriverLock(driver);
-    }
-
-    ret = virObjectRef(driver->caps);
-    chDriverUnlock(driver);
-    return ret;
-}
-
-virDomainXMLOption *
-chDomainXMLConfInit(virCHDriver *driver)
-{
-    virCHDriverDomainDefParserConfig.priv = driver;
-    return virDomainXMLOptionNew(&virCHDriverDomainDefParserConfig,
-                                 &virCHDriverPrivateDataCallbacks,
-                                 NULL, NULL, NULL);
-}
-
-virCHDriverConfig *
-virCHDriverConfigNew(bool privileged)
-{
-    virCHDriverConfig *cfg;
-
-    if (virCHConfigInitialize() < 0)
-        return NULL;
-
-    if (!(cfg = virObjectNew(virCHDriverConfigClass)))
-        return NULL;
-
-    if (privileged) {
-        if (virGetUserID(CH_USER, &cfg->user) < 0)
-            return NULL;
-        if (virGetGroupID(CH_GROUP, &cfg->group) < 0)
-            return NULL;
-    } else {
-        cfg->user = (uid_t)-1;
-        cfg->group = (gid_t)-1;
-    }
-
-    if (privileged) {
-        cfg->logDir = g_strdup_printf("%s/log/libvirt/ch", LOCALSTATEDIR);
-        cfg->stateDir = g_strdup_printf("%s/libvirt/ch", RUNSTATEDIR);
-
-    } else {
-        g_autofree char *rundir = NULL;
-        g_autofree char *cachedir = NULL;
-
-        cachedir = virGetUserCacheDirectory();
-
-        cfg->logDir = g_strdup_printf("%s/ch/log", cachedir);
-
-        rundir = virGetUserRuntimeDirectory();
-        cfg->stateDir = g_strdup_printf("%s/ch/run", rundir);
-    }
-
-    cfg->cgroupControllers = -1; /* Auto detect */
-
-    return cfg;
-}
-
-virCHDriverConfig *virCHDriverGetConfig(virCHDriver *driver)
-{
-    virCHDriverConfig *cfg;
     chDriverLock(driver);
-    cfg = virObjectRef(driver->config);
-    chDriverUnlock(driver);
-    return cfg;
+    virObjectUnref(driver->caps);
+    driver->caps = caps;
+  } else {
+    chDriverLock(driver);
+  }
+
+  ret = virObjectRef(driver->caps);
+  chDriverUnlock(driver);
+  return ret;
 }
 
-static void
-virCHDriverConfigDispose(void *obj)
-{
-    virCHDriverConfig *cfg = obj;
+virDomainXMLOption *chDomainXMLConfInit(virCHDriver *driver) {
+  virCHDriverDomainDefParserConfig.priv = driver;
+  return virDomainXMLOptionNew(&virCHDriverDomainDefParserConfig,
+                               &virCHDriverPrivateDataCallbacks, NULL, NULL,
+                               NULL);
+}
 
-    g_free(cfg->stateDir);
-    g_free(cfg->logDir);
+virCHDriverConfig *virCHDriverConfigNew(bool privileged) {
+  virCHDriverConfig *cfg;
+
+  if (virCHConfigInitialize() < 0)
+    return NULL;
+
+  if (!(cfg = virObjectNew(virCHDriverConfigClass)))
+    return NULL;
+
+  if (privileged) {
+    if (virGetUserID(CH_USER, &cfg->user) < 0)
+      return NULL;
+    if (virGetGroupID(CH_GROUP, &cfg->group) < 0)
+      return NULL;
+  } else {
+    cfg->user = (uid_t)-1;
+    cfg->group = (gid_t)-1;
+  }
+
+  if (privileged) {
+    cfg->logDir = g_strdup_printf("%s/log/libvirt/ch", LOCALSTATEDIR);
+    cfg->stateDir = g_strdup_printf("%s/libvirt/ch", RUNSTATEDIR);
+
+  } else {
+    g_autofree char *rundir = NULL;
+    g_autofree char *cachedir = NULL;
+
+    cachedir = virGetUserCacheDirectory();
+
+    cfg->logDir = g_strdup_printf("%s/ch/log", cachedir);
+
+    rundir = virGetUserRuntimeDirectory();
+    cfg->stateDir = g_strdup_printf("%s/ch/run", rundir);
+  }
+
+  cfg->cgroupControllers = -1; /* Auto detect */
+
+  return cfg;
+}
+
+virCHDriverConfig *virCHDriverGetConfig(virCHDriver *driver) {
+  virCHDriverConfig *cfg;
+  chDriverLock(driver);
+  cfg = virObjectRef(driver->config);
+  chDriverUnlock(driver);
+  return cfg;
+}
+
+static void virCHDriverConfigDispose(void *obj) {
+  virCHDriverConfig *cfg = obj;
+
+  g_free(cfg->stateDir);
+  g_free(cfg->logDir);
 }
 
 #define MIN_VERSION ((15 * 1000000) + (0 * 1000) + (0))
 
-int
-chExtractVersion(virCHDriver *driver)
-{
-    unsigned long version;
-    g_autofree char *help = NULL;
-    char *tmp = NULL;
-    g_autofree char *ch_cmd = g_find_program_in_path(CH_CMD);
-    g_autoptr(virCommand) cmd = NULL;
+int chExtractVersion(virCHDriver *driver) {
+  unsigned long version;
+  g_autofree char *help = NULL;
+  char *tmp = NULL;
+  g_autofree char *ch_cmd = g_find_program_in_path(CH_CMD);
+  g_autoptr(virCommand) cmd = NULL;
 
-    if (!ch_cmd)
-        return -2;
+  if (!ch_cmd)
+    return -2;
 
-    cmd = virCommandNewArgList(ch_cmd, "--version", NULL);
-    virCommandAddEnvString(cmd, "LC_ALL=C");
-    virCommandSetOutputBuffer(cmd, &help);
+  cmd = virCommandNewArgList(ch_cmd, "--version", NULL);
+  virCommandAddEnvString(cmd, "LC_ALL=C");
+  virCommandSetOutputBuffer(cmd, &help);
 
-    if (virCommandRun(cmd, NULL) < 0)
-        return -1;
+  if (virCommandRun(cmd, NULL) < 0)
+    return -1;
 
-    tmp = help;
+  tmp = help;
 
-    /* expected format: cloud-hypervisor v<major>.<minor>.<micro> */
-    if ((tmp = STRSKIP(tmp, "cloud-hypervisor v")) == NULL) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Unexpected output of cloud-hypervisor binary"));
-        return -1;
-    }
+  /* expected format: cloud-hypervisor v<major>.<minor>.<micro> */
+  if ((tmp = STRSKIP(tmp, "cloud-hypervisor v")) == NULL) {
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("Unexpected output of cloud-hypervisor binary"));
+    return -1;
+  }
 
-    if (virParseVersionString(tmp, &version, true) < 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("Unable to parse cloud-hypervisor version: %s"), tmp);
-        return -1;
-    }
+  if (virParseVersionString(tmp, &version, true) < 0) {
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   _("Unable to parse cloud-hypervisor version: %s"), tmp);
+    return -1;
+  }
 
-    if (version < MIN_VERSION) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Cloud-Hypervisor version is too old (v15.0 is the minimum supported version)"));
-        return -1;
-    }
+  if (version < MIN_VERSION) {
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("Cloud-Hypervisor version is too old (v15.0 is the "
+                     "minimum supported version)"));
+    return -1;
+  }
 
-    driver->version = version;
-    return 0;
+  driver->version = version;
+  return 0;
 }
