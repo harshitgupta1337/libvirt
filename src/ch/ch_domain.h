@@ -93,6 +93,7 @@ struct _virCHDomainObjPrivate {
     int vmThreadWatcherStop;
 
     char *ch_path;
+    bool vhost_user_dev_exists;
 };
 
 #define CH_DOMAIN_PRIVATE(vm) \

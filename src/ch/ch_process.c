@@ -624,6 +624,13 @@ chProcessNetworkPrepareDevices(virCHDriverPtr driver, virDomainObjPtr vm)
             // This info will be used while generating Network Json
             priv->tapfd = g_steal_pointer(&tapfd);
             priv->tapfdSize = tapfdSize;
+        } else if (actualType == VIR_DOMAIN_NET_TYPE_VHOSTUSER) {
+            tapfdSize = net->driver.virtio.queues;
+            if (!tapfdSize)
+                tapfdSize = 1;
+            priv->tapfd = NULL;
+            priv->tapfdSize = tapfdSize;
+            priv->vhost_user_dev_exists = true;
         }
     }
 

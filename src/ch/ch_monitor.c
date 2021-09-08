@@ -207,17 +207,24 @@ virCHMonitorBuildCmdlineJson(virJSONValuePtr content, virDomainDefPtr vmdef)
 }
 
 static int
-virCHMonitorBuildMemoryJson(virJSONValuePtr content, virDomainDefPtr vmdef)
+virCHMonitorBuildMemoryJson(virDomainObjPtr vm, virJSONValuePtr content, virDomainDefPtr vmdef)
 {
     virJSONValuePtr memory;
     unsigned long long total_memory = virDomainDefGetMemoryInitial(vmdef) * 1024;
+    virCHDomainObjPrivatePtr priv = vm->privateData;
+
 
     if (total_memory != 0) {
         memory = virJSONValueNewObject();
         if (virJSONValueObjectAppendNumberUlong(memory, "size", total_memory) < 0)
             goto cleanup;
+        if ( priv->vhost_user_dev_exists == true ){
+            if (virJSONValueObjectAppendBoolean(memory, "shared", true) < 0)
+                goto cleanup;
+        }
         if (virJSONValueObjectAppend(content, "memory", memory) < 0)
             goto cleanup;
+
     }
 
     return 0;
@@ -352,8 +359,8 @@ virCHMonitorBuildNetJson(virDomainObjPtr vm, virJSONValuePtr nets, virDomainNetD
                 VIR_APPEND_ELEMENT(*nicindexes, *nnicindexes, nicindex) < 0)
                 goto cleanup;
         }
-
         break;
+
     case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
         if ((virDomainChrType)netdef->data.vhostuser->type != VIR_DOMAIN_CHR_TYPE_UNIX) {
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
@@ -383,22 +390,21 @@ virCHMonitorBuildNetJson(virDomainObjPtr vm, virJSONValuePtr nets, virDomainNetD
     case VIR_DOMAIN_NET_TYPE_LAST:
     default:
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Only ethernet and vhost_user type network types are "
+                       _("Only ethernet, bridge, network and vhost_user network types are "
                          "supported in this CH"));
         goto cleanup;
     }
 
     clh_tapfds = virJSONValueNewArray();
-    for (i=0; i< priv->tapfdSize; i++) {
-        virJSONValueArrayAppend(clh_tapfds, virJSONValueNewNumberUint(priv->tapfd[i]));
+    if (priv->tapfd != NULL) {
+        for (i=0; i< priv->tapfdSize; i++) {
+            virJSONValueArrayAppend(clh_tapfds, virJSONValueNewNumberUint(priv->tapfd[i]));
+        }
+        if (virJSONValueObjectAppend(net, "fds", clh_tapfds) < 0)
+            goto cleanup;
     }
-
-    if (virJSONValueObjectAppend(net, "fds", clh_tapfds) < 0)
-        goto cleanup;
-
     if (virJSONValueObjectAppendString(net, "mac", virMacAddrFormat(&netdef->mac, macaddr)) < 0)
         goto cleanup;
-
 
     if (netdef->virtio != NULL) {
         if (netdef->virtio->iommu == VIR_TRISTATE_SWITCH_ON) {
@@ -543,7 +549,7 @@ virCHMonitorBuildVMJson(virDomainObjPtr vm, virDomainDefPtr vmdef, char **jsonst
     if (virCHMonitorBuildPTYJson(content, vmdef) < 0)
         goto cleanup;
 
-    if (virCHMonitorBuildMemoryJson(content, vmdef) < 0)
+    if (virCHMonitorBuildMemoryJson(vm, content, vmdef) < 0)
         goto cleanup;
 
     if (virCHMonitorBuildKernelJson(content, vmdef) < 0)
@@ -567,6 +573,7 @@ virCHMonitorBuildVMJson(virDomainObjPtr vm, virDomainDefPtr vmdef, char **jsonst
 
     if (!(*jsonstr = virJSONValueToString(content, false)))
         goto cleanup;
+    VIR_WARN("JSON=%s", *jsonstr);
 
     ret = 0;
 
@@ -1216,17 +1223,19 @@ virCHMonitorNew(virDomainObjPtr vm, virCHDriverPtr driver)
 
     cmd = virCommandNew(priv->ch_path);
 
-    virCommandAddArgList(cmd, "--api-socket", mon->socketpath, NULL);
-
+    //virCommandAddArgList(cmd, "--api-socket", mon->socketpath, NULL);
+    virCommandAddArgList(cmd,"-vvv", "--log-file", "/var/log/libvirt/ch.log", "--api-socket", mon->socketpath, NULL);
     if (virFileMakePath(cfg->stateDir) < 0) {
         virReportSystemError(errno,
                              _("Cannot create socket directory '%s'"),
                              cfg->stateDir);
         goto cleanup;
     }
-    for (i = 0; i < priv->tapfdSize; i++) {
-        virCommandPassFD(cmd, priv->tapfd[i],
-                         VIR_COMMAND_PASS_FD_CLOSE_PARENT);
+    if (priv->tapfd != NULL){
+        for (i = 0; i < priv->tapfdSize; i++) {
+            virCommandPassFD(cmd, priv->tapfd[i],
+                            VIR_COMMAND_PASS_FD_CLOSE_PARENT);
+        }
     }
 
     /* Monitor fd to listen for VM state changes */
