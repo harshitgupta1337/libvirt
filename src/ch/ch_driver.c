@@ -2298,6 +2298,47 @@ chConnectDomainEventDeregisterAny(virConnectPtr conn,
     return 0;
 }
 
+static int
+chDomainInterfaceAddresses(virDomain *dom,
+                           virDomainInterfacePtr **ifaces,
+                           unsigned int source,
+                           unsigned int flags)
+{
+    virDomainObj *vm = NULL;
+    int ret = -1;
+
+    virCheckFlags(0, -1);
+
+    if (!(vm = virCHDomainObjFromDomain(dom)))
+        goto cleanup;
+
+    if (virDomainInterfaceAddressesEnsureACL(dom->conn, vm->def, source) < 0)
+        goto cleanup;
+
+    if (virDomainObjCheckActive(vm) < 0)
+        goto cleanup;
+
+    switch (source) {
+    case VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE:
+        ret = virDomainNetDHCPInterfaces(vm->def, ifaces);
+        break;
+
+    case VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_ARP:
+        ret = virDomainNetARPInterfaces(vm->def, ifaces);
+        break;
+
+    default:
+        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED,
+                       _("Unsupported IP address data source %1$d"),
+                       source);
+        break;
+    }
+
+ cleanup:
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
 
 /* Function Tables */
 static virHypervisorDriver chHypervisorDriver = {
@@ -2316,6 +2357,7 @@ static virHypervisorDriver chHypervisorDriver = {
     .domainCreateXML = chDomainCreateXML,                   /* 7.5.0 */
     .domainCreate = chDomainCreate,                         /* 7.5.0 */
     .domainCreateWithFlags = chDomainCreateWithFlags,       /* 7.5.0 */
+    .domainInterfaceAddresses = chDomainInterfaceAddresses, /* 10.10.1 */
     .domainShutdown = chDomainShutdown,                     /* 7.5.0 */
     .domainShutdownFlags = chDomainShutdownFlags,           /* 7.5.0 */
     .domainReboot = chDomainReboot,                         /* 7.5.0 */
