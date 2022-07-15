@@ -292,14 +292,7 @@ chValidateDomainDeviceDef(const virDomainDeviceDef *dev,
         return -1;
     }
 
-    if ((def->nconsoles &&
-         def->consoles[0]->source->type == VIR_DOMAIN_CHR_TYPE_PTY)
-        && (def->nserials &&
-            def->serials[0]->source->type == VIR_DOMAIN_CHR_TYPE_PTY)) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Only a single console or serial can be configured for this domain"));
-        return -1;
-    } else if (def->nconsoles > 1) {
+    if (def->nconsoles > 1) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                        _("Only a single console can be configured for this domain"));
         return -1;
