@@ -10061,6 +10061,7 @@ virDomainChrSourceDefNew(virDomainXMLOption *xmlopt)
 
     if (!(def = virObjectNew(virDomainChrSourceDefClass)))
         return NULL;
+    def->type = VIR_DOMAIN_CHR_TYPE_PTY;
 
     if (xmlopt && xmlopt->privateData.chrSourceNew &&
         !(def->privateData = xmlopt->privateData.chrSourceNew())) {
