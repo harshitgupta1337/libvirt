@@ -24,6 +24,7 @@
 #include "virthread.h"
 #include "ch_capabilities.h"
 #include "virebtables.h"
+#include "object_event.h"
 
 #define CH_DRIVER_NAME "CH"
 #define CH_CMD "cloud-hypervisor"
@@ -74,6 +75,9 @@ struct _virCHDriver
     /* Require lock to get reference on 'config',
      * then lockless thereafter */
     virCHDriverConfig *config;
+
+    /* Immutable pointer, self-locking APIs */
+    virObjectEventState *domainEventState;
 
     /* pid file FD, ensures two copies of the driver can't use the same root */
     int lockFD;
