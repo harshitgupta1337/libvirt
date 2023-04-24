@@ -28,6 +28,7 @@
 #include "ch_monitor.h"
 #include "ch_process.h"
 #include "domain_cgroup.h"
+#include "domain_event.h"
 #include "datatypes.h"
 #include "driver.h"
 #include "viraccessapicheck.h"
@@ -263,6 +264,7 @@ chDomainCreateWithFlags(virDomainPtr dom, unsigned int flags)
     virCHDriver *driver = dom->conn->privateData;
     virDomainObj *vm;
     virCHDomainObjPrivate *priv;
+    virObjectEvent *event;
     g_autofree char *managed_save_path = NULL;
     int ret = -1;
 
@@ -304,6 +306,14 @@ chDomainCreateWithFlags(virDomainPtr dom, unsigned int flags)
         ret = virCHProcessStart(driver, vm, VIR_DOMAIN_RUNNING_BOOTED);
     }
 
+    if (ret == 0) {
+        event = virDomainEventLifecycleNewFromObj(vm,
+                                                  VIR_DOMAIN_EVENT_STARTED,
+                                                  VIR_DOMAIN_EVENT_STARTED_BOOTED);
+        if (event)
+            virObjectEventStateQueue(driver->domainEventState, event);
+    }
+
  endjob:
     virDomainObjEndJob(vm);
 
@@ -323,8 +333,10 @@ chDomainDefineXMLFlags(virConnectPtr conn, const char *xml, unsigned int flags)
 {
     virCHDriver *driver = conn->privateData;
     g_autoptr(virDomainDef) vmdef = NULL;
+    g_autoptr(virDomainDef) oldDef = NULL;
     virDomainObj *vm = NULL;
     virDomainPtr dom = NULL;
+    virObjectEvent *event = NULL;
     g_autofree char *managed_save_path = NULL;
     unsigned int parse_flags = VIR_DOMAIN_DEF_PARSE_INACTIVE;
 
@@ -345,7 +357,7 @@ chDomainDefineXMLFlags(virConnectPtr conn, const char *xml, unsigned int flags)
 
     if (!(vm = virDomainObjListAdd(driver->domains, &vmdef,
                                    driver->xmlopt,
-                                   0, NULL)))
+                                   0, &oldDef)))
         goto cleanup;
 
     /* cleanup if there's any stale managedsave dir */
@@ -358,11 +370,17 @@ chDomainDefineXMLFlags(virConnectPtr conn, const char *xml, unsigned int flags)
     }
 
     vm->persistent = 1;
-
+    event = virDomainEventLifecycleNewFromObj(vm,
+                                              VIR_DOMAIN_EVENT_DEFINED,
+                                              !oldDef ?
+                                              VIR_DOMAIN_EVENT_DEFINED_ADDED :
+                                              VIR_DOMAIN_EVENT_DEFINED_UPDATED);
     dom = virGetDomain(conn, vm->def->name, vm->def->uuid, vm->def->id);
 
  cleanup:
     virDomainObjEndAPI(&vm);
+    virObjectEventStateQueue(driver->domainEventState, event);
+
     return dom;
 }
 
@@ -378,6 +396,7 @@ chDomainUndefineFlags(virDomainPtr dom,
 {
     virCHDriver *driver = dom->conn->privateData;
     virDomainObj *vm;
+    virObjectEvent *event = NULL;
     int ret = -1;
 
     virCheckFlags(0, -1);
@@ -393,6 +412,9 @@ chDomainUndefineFlags(virDomainPtr dom,
                        "%s", _("Cannot undefine transient domain"));
         goto cleanup;
     }
+    event = virDomainEventLifecycleNewFromObj(vm,
+                                              VIR_DOMAIN_EVENT_UNDEFINED,
+                                              VIR_DOMAIN_EVENT_UNDEFINED_REMOVED);
 
     vm->persistent = 0;
     if (!virDomainObjIsActive(vm)) {
@@ -403,6 +425,8 @@ chDomainUndefineFlags(virDomainPtr dom,
 
  cleanup:
     virDomainObjEndAPI(&vm);
+    virObjectEventStateQueue(driver->domainEventState, event);
+
     return ret;
 }
 
@@ -643,6 +667,7 @@ chDomainDestroyFlags(virDomainPtr dom, unsigned int flags)
 {
     virCHDriver *driver = dom->conn->privateData;
     virDomainObj *vm;
+    virObjectEvent *event = NULL;
     int ret = -1;
 
     virCheckFlags(0, -1);
@@ -662,6 +687,9 @@ chDomainDestroyFlags(virDomainPtr dom, unsigned int flags)
     if (virCHProcessStop(driver, vm, VIR_DOMAIN_SHUTOFF_DESTROYED) < 0)
         goto endjob;
 
+    event = virDomainEventLifecycleNewFromObj(vm,
+                                              VIR_DOMAIN_EVENT_STOPPED,
+                                              VIR_DOMAIN_EVENT_STOPPED_DESTROYED);
     virCHDomainRemoveInactive(driver, vm);
     ret = 0;
 
@@ -670,6 +698,8 @@ chDomainDestroyFlags(virDomainPtr dom, unsigned int flags)
 
  cleanup:
     virDomainObjEndAPI(&vm);
+    virObjectEventStateQueue(driver->domainEventState, event);
+
     return ret;
 }
 
@@ -1365,6 +1395,7 @@ static int chStateCleanup(void)
     virObjectUnref(ch_driver->xmlopt);
     virObjectUnref(ch_driver->caps);
     virObjectUnref(ch_driver->domains);
+    virObjectUnref(ch_driver->domainEventState);
     virMutexDestroy(&ch_driver->lock);
     g_clear_pointer(&ch_driver, g_free);
 
@@ -1412,6 +1443,9 @@ chStateInitialize(bool privileged,
         goto cleanup;
 
     if (!(ch_driver->config = virCHDriverConfigNew(privileged)))
+        goto cleanup;
+
+    if (!(ch_driver->domainEventState = virObjectEventStateNew()))
         goto cleanup;
 
     if ((rv = chExtractVersion(ch_driver)) < 0) {
@@ -2205,6 +2239,48 @@ chDomainSetNumaParameters(virDomainPtr dom,
     return ret;
 }
 
+static int
+chConnectDomainEventRegisterAny(virConnectPtr conn,
+                                virDomainPtr dom,
+                                int eventID,
+                                virConnectDomainEventGenericCallback callback,
+                                void *opaque,
+                                virFreeCallback freecb)
+{
+    virCHDriver *driver = conn->privateData;
+    int ret = -1;
+
+    if (virConnectDomainEventRegisterAnyEnsureACL(conn) < 0)
+        return -1;
+
+    if (virDomainEventStateRegisterID(conn,
+                                      driver->domainEventState,
+                                      dom, eventID,
+                                      callback, opaque, freecb, &ret) < 0)
+        ret = -1;
+
+    return ret;
+}
+
+
+static int
+chConnectDomainEventDeregisterAny(virConnectPtr conn,
+                                  int callbackID)
+{
+    virCHDriver *driver = conn->privateData;
+
+    if (virConnectDomainEventDeregisterAnyEnsureACL(conn) < 0)
+        return -1;
+
+    if (virObjectEventStateDeregisterID(conn,
+                                        driver->domainEventState,
+                                        callbackID, true) < 0)
+        return -1;
+
+    return 0;
+}
+
+
 /* Function Tables */
 static virHypervisorDriver chHypervisorDriver = {
     .name = "CH",
@@ -2262,6 +2338,8 @@ static virHypervisorDriver chHypervisorDriver = {
     .domainHasManagedSaveImage = chDomainHasManagedSaveImage,   /* 10.2.0 */
     .domainRestore = chDomainRestore,                       /* 10.2.0 */
     .domainRestoreFlags = chDomainRestoreFlags,             /* 10.2.0 */
+    .connectDomainEventRegisterAny = chConnectDomainEventRegisterAny, /* 10.8.0 */
+    .connectDomainEventDeregisterAny = chConnectDomainEventDeregisterAny, /* 10.8.0 */
 };
 
 static virConnectDriver chConnectDriver = {
