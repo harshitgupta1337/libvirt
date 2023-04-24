@@ -96,6 +96,7 @@ struct _virCHMonitor {
 
     char *socketpath;
 
+    char *pidfile;
     pid_t pid;
 
     virDomainObj *vm;
