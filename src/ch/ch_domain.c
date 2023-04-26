@@ -204,7 +204,6 @@ chValidateDomainDeviceDef(const virDomainDeviceDef *dev,
         }
     }
 
-
     if (def->nconsoles > 1) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                        _("Only a single console can be configured for this domain"));
