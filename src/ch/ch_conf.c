@@ -64,6 +64,9 @@ virCaps *virCHDriverCapsInit(void)
     if (virCapabilitiesInitCaches(caps) < 0)
         return NULL;
 
+    if (virCapabilitiesInitPages(caps) < 0)
+        return NULL;
+
     guest = virCapabilitiesAddGuest(caps, VIR_DOMAIN_OSTYPE_HVM,
                                     caps->host.arch, NULL, NULL, 0, NULL);
 

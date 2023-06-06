@@ -209,9 +209,23 @@ virCHMonitorBuildMemoryJson(virJSONValue *content, virDomainDef *vmdef)
 
     if (total_memory != 0) {
         g_autoptr(virJSONValue) memory = virJSONValueNewObject();
+        unsigned long long hugepage_size;
 
         if (virJSONValueObjectAppendNumberUlong(memory, "size", total_memory) < 0)
             return -1;
+
+        if (vmdef->mem.nhugepages > 0) {
+            if (vmdef->mem.nhugepages > 1) {
+                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                                ("Multiple hugepages config is not supported in CH Driver as of now"));
+                return -1;
+            }
+            hugepage_size = vmdef->mem.hugepages[0].size * 1024;
+            if (virJSONValueObjectAppendBoolean(memory, "hugepages", true) < 0)
+                return -1;
+            if (virJSONValueObjectAppendNumberUlong(memory, "hugepage_size", hugepage_size) < 0)
+                return -1;
+        }
 
         if (virJSONValueObjectAppend(content, "memory", &memory) < 0)
             return -1;

@@ -24,6 +24,7 @@
 #include "domain_driver.h"
 #include "virchrdev.h"
 #include "virlog.h"
+#include "virnuma.h"
 #include "virtime.h"
 #include "virsystemd.h"
 #include "datatypes.h"
@@ -253,19 +254,89 @@ virCHDomainRefreshThreadInfo(virDomainObj *vm)
 
     return 0;
 }
+
+
+
 static int
-chValidateDomainDef(const virDomainDef *def, void *opaque G_GNUC_UNUSED,
-                          void *parseOpaque G_GNUC_UNUSED){
-/*
- * Cloud-hypervisor only supports host passthrough CPUs
- */
+chDomainDefValidateMemory(const virDomainDef *def,
+                             virCaps *caps)
+{
+    const virDomainMemtune *mem = &def->mem;
+    unsigned long long hugepage_size;
+    unsigned long long page_free;
+    unsigned long long total_memory;
+    unsigned long long pages_needed;
+    int i;
+
+    if (mem->nhugepages == 0)
+        return 0 ;
+
+    /* CH supports multiple hugespages sizes but it expects exact memory to be allocated in the form of memory-zones
+       So, support only single hugepage size for now */
+    if (mem->nhugepages > 1) {
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                        ("Multiple hugepages config is not supported in CH Driver"));
+        return -1;
+    }
+
+    if (mem->nosharepages) {
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                        ("Disabling shared memory doesn't work with CH"));
+        return -1;
+    }
+
+    /* check if the host has given hugepages size support*/
+    hugepage_size = mem->hugepages[0].size;
+    for( i=0; i < caps->host.nPagesSize; i++) {
+        if(hugepage_size == caps->host.pagesSize[i])
+            break;
+    }
+    if (i == caps->host.nPagesSize){
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                       _("Host does not suppot HugePage size %llu B"),
+                        hugepage_size);
+        return -1;
+    }
+
+    if (virNumaGetPageInfo(-1, hugepage_size, 0, NULL, &page_free) < 0) {
+        return -1;
+    }
+    total_memory = virDomainDefGetMemoryInitial(def);
+    pages_needed = total_memory / hugepage_size;
+    if (pages_needed > page_free) {
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                       _("Host does not have enough free HugePages of size %llu B"),
+                        hugepage_size);
+        return -1;
+    }
+
+    return 0;
+}
+
+static int
+chValidateDomainDef(const virDomainDef *def, void *opaque,
+                          void *parseOpaque G_GNUC_UNUSED)
+{
+    virCHDriver *driver = opaque;
+    g_autoptr(virCaps) caps = virCHDriverGetCapabilities(driver, false);
+    if (!caps)
+        return -1;
+    if (chDomainDefValidateMemory(def, caps) < 0)
+        return -1;
+
+   /*
+    * Cloud-hypervisor only supports host passthrough CPUs
+    */
     if (def->cpu && (def->cpu->mode != VIR_CPU_MODE_HOST_PASSTHROUGH)){
         VIR_ERROR("\"host-passthrough\" is the only mode supported by CH driver");
         return -1;
     }
     return 0;
-}
 
+
+
+    return 0;
+}
 
 virDomainDefParserConfig virCHDriverDomainDefParserConfig = {
     .domainPostParseBasicCallback = virCHDomainDefPostParseBasic,
