@@ -253,11 +253,25 @@ virCHDomainRefreshThreadInfo(virDomainObj *vm)
 
     return 0;
 }
+static int
+chValidateDomainDef(const virDomainDef *def, void *opaque G_GNUC_UNUSED,
+                          void *parseOpaque G_GNUC_UNUSED){
+/*
+ * Cloud-hypervisor only supports host passthrough CPUs
+ */
+    if (def->cpu && (def->cpu->mode != VIR_CPU_MODE_HOST_PASSTHROUGH)){
+        VIR_ERROR("\"host-passthrough\" is the only mode supported by CH driver");
+        return -1;
+    }
+    return 0;
+}
+
 
 virDomainDefParserConfig virCHDriverDomainDefParserConfig = {
     .domainPostParseBasicCallback = virCHDomainDefPostParseBasic,
     .domainPostParseCallback = virCHDomainDefPostParse,
     .deviceValidateCallback = chValidateDomainDeviceDef,
+    .domainValidateCallback = chValidateDomainDef,
     .features = VIR_DOMAIN_DEF_FEATURE_NO_STUB_CONSOLE,
 };
 
