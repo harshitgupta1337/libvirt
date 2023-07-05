@@ -32,21 +32,21 @@ jobs:
             Thank you for your time and understanding.
           lock-issue: true
           close-issue: true
-          pr-comment: |
-            Thank you for your interest in the libvirt project.
+          #pr-comment: |
+          #  Thank you for your interest in the libvirt project.
 
-            Since this repository is a read-only mirror of the project's master
-            repostory hosted on GitLab, merge requests opened here are not
-            processed.
+          #  Since this repository is a read-only mirror of the project's master
+          #  repostory hosted on GitLab, merge requests opened here are not
+          #  processed.
 
-            We kindly request that contributors fork the project at
+          #  We kindly request that contributors fork the project at
 
-              https://gitlab.com/libvirt/libvirt/
+          #    https://gitlab.com/libvirt/libvirt/
 
-            push changes to the fork, and then open a new merge request at
+          #  push changes to the fork, and then open a new merge request at
 
-              https://gitlab.com/libvirt/libvirt/-/merge_requests/new
+          #    https://gitlab.com/libvirt/libvirt/-/merge_requests/new
 
-            Thank you for your time and understanding.
-          lock-pr: true
-          close-pr: true
+          #  Thank you for your time and understanding.
+          #lock-pr: true
+          #close-pr: true
