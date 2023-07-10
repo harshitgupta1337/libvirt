@@ -35,11 +35,15 @@
 #include "virlog.h"
 #include "virstring.h"
 #include "virpidfile.h"
+#include "virfile.h"
+#include <fcntl.h>
+
 
 #include "virtime.h"
 #include "ch_interface.h"
 
 #define VIR_FROM_THIS VIR_FROM_CH
+#define CH_LOG_DIR          "/var/log/libvirt/ch"
 
 VIR_LOG_INIT("ch.ch_monitor");
 
@@ -610,7 +614,8 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
 {
     g_autoptr(virCHMonitor) mon = NULL;
     g_autoptr(virCommand) cmd = NULL;
-    int socket_fd = 0;
+    char *logfile = NULL;
+    int socket_fd = 0, logfd=0;
     int i;
     virCHDomainObjPrivate *priv = vm->privateData;
 
@@ -635,12 +640,33 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
         return NULL;
     }
 
+    if (g_mkdir_with_parents(CH_LOG_DIR, 0777) < 0) {
+        virReportSystemError(errno,
+                             _("Cannot create CH log directory '%1$s'"),
+                             CH_LOG_DIR);
+        return NULL;
+    }
+
+    logfile = g_strdup_printf("%s/%s.log", CH_LOG_DIR, vm->def->name);
+    if ((logfd = virFileOpenAs(logfile, O_WRONLY | O_APPEND | O_CREAT,
+                            S_IRUSR|S_IWUSR,
+                            -1, -1, 0)) < 0) {
+        virReportSystemError(errno,
+                             _("Cannot log file '%1$s'"),
+                             logfile);
+        return NULL;
+    }
+
+
 
     cmd = virCommandNew(vm->def->emulator);
     mon->pidfile = virPidFileBuildPath(socketdir, vm->def->name);
     virCommandSetPidFile(cmd, mon->pidfile);
     virCommandDaemonize(cmd);
     virCommandSetUmask(cmd, 0x002);
+    virCommandSetOutputFD(cmd, &logfd);
+    virCommandSetErrorFD(cmd, &logfd);
+
     socket_fd = chMonitorCreateSocket(mon->socketpath);
     if (socket_fd < 0) {
         virReportSystemError(errno,
