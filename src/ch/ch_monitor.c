@@ -510,6 +510,51 @@ virCHMonitorBuildDevicesJson(virJSONValue *content,
 }
 
 static int
+virCHMonitorBuildNumaNodeJson(virJSONValue *content,
+                             virDomainDef *vmdef)
+{
+    size_t i;
+    virJSONValue **numaNodes = NULL;
+    size_t ncells = virDomainNumaGetNodeCount(def->numa);
+
+    if (ncells == 0)
+        return 0;
+
+    numaNodes = g_new0(virJSONValue *, ncells);
+
+    for (i = 0; i < ncells; i++) {
+        if (virCHMonitorBuildNumaNodeJson(devices, vmdef->hostdevs[i]) < 0)
+            return -1;
+    }
+    if (virJSONValueObjectAppend(content, "devices", &devices) < 0)
+        return -1;
+
+    return 0;
+}
+
+static int
+virCHMonitorBuildNumaNodesJson(virJSONValue *content, virDomainDef *vmdef)
+{
+    size_t i;
+    virJSONValue **numaNodes = NULL;
+    size_t ncells = virDomainNumaGetNodeCount(def->numa);
+
+    if (ncells == 0)
+        return 0;
+
+    numaNodes = g_new0(virJSONValue *, ncells);
+
+    for (i = 0; i < ncells; i++) {
+        if (virCHMonitorBuildNumaNodeJson(numaNodes, vmdef->hostdevs[i]) < 0)
+            return -1;
+    }
+    if (virJSONValueObjectAppend(content, "devices", &devices) < 0)
+        return -1;
+
+    return 0;
+}
+
+static int
 virCHMonitorBuildVMJson(virDomainObj *vm, virDomainDef *vmdef, char **jsonstr,
                         size_t *nnicindexes, int **nicindexes)
 {
@@ -545,6 +590,8 @@ virCHMonitorBuildVMJson(virDomainObj *vm, virDomainDef *vmdef, char **jsonstr,
         return -1;
 
     if (virCHMonitorBuildDevicesJson(content, vmdef) < 0)
+        return -1;
+    if (virCHMonitorBuildNumaJson(content, vmdef) < 0)
         return -1;
 
     if (!(*jsonstr = virJSONValueToString(content, false)))
