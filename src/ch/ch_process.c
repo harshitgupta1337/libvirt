@@ -584,6 +584,8 @@ virCHProcessStart(virCHDriver *driver,
         return -1;
     }
 
+    // qemuProcessPrepareDomainNUMAPlacement
+
     /* network devices must be "prepared" before hostdevs, because
      * setting up a network device might create a new hostdev that
      * will need to be setup.
