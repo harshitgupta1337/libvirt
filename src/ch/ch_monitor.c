@@ -36,6 +36,8 @@
 #include "virstring.h"
 #include "virpidfile.h"
 #include "virfile.h"
+#include "virbitmap.h"
+#include "virnuma.h"
 #include <fcntl.h>
 
 
@@ -509,24 +511,107 @@ virCHMonitorBuildDevicesJson(virJSONValue *content,
     return 0;
 }
 
-static int
-virCHMonitorBuildNumaNodeJson(virJSONValue *content,
-                             virDomainDef *vmdef)
+
+/*
+* For each memory zone created, append memory zone to content.
+* For now, only single memory node per numa node is supported
+*/
+static int virCHMonitorBuildMemZoneJson(virDomainDef *vmdef,
+                                    size_t cellid, const char *zone_id,
+                                    virJSONValue **mzones)
 {
-    size_t i;
-    virJSONValue **numaNodes = NULL;
-    size_t ncells = virDomainNumaGetNodeCount(def->numa);
+    g_autoptr(virJSONValue) mzone = virJSONValueNewObject();
+    virBitmap *mem_mask = NULL;
+    unsigned int host_node;
+    unsigned long long hugepage_size = 0;
+    unsigned long long memsize = virDomainNumaGetNodeMemorySize(vmdef->numa,
+                                                                cellid) * 1024;
+    VIR_WARN("PPK: memory size is %llu in bytes = %llu", virDomainNumaGetNodeMemorySize(vmdef->numa,
+                                                                cellid) , memsize );
+    // TODO: Ideally, this id should be combination of 2 pieces: cellid and zone_id within cellid.
+    // Since a single zone per cell is supported, this works
+    virJSONValueObjectAppendString(mzone, "id", zone_id);
+    virJSONValueObjectAppendNumberLong(mzone, "size", memsize);
 
-    if (ncells == 0)
-        return 0;
+    if (vmdef->mem.nhugepages > 0) {
+        if (vmdef->mem.nhugepages > 1) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+            ("Multiple hugepages config is not supported in CH Driver as of now"));
+        return -1;
+        }
+    hugepage_size = vmdef->mem.hugepages[0].size * 1024;
+    }
 
-    numaNodes = g_new0(virJSONValue *, ncells);
+    if (hugepage_size){
+        if (virJSONValueObjectAppendBoolean(mzone, "hugepages", true) < 0)
+        return -1;
+        if (virJSONValueObjectAppendNumberUlong(mzone, "hugepage_size", hugepage_size) < 0)
+        return -1;
+    }
 
-    for (i = 0; i < ncells; i++) {
-        if (virCHMonitorBuildNumaNodeJson(devices, vmdef->hostdevs[i]) < 0)
+    if(virDomainNumatuneMaybeGetNodeset(vmdef->numa, NULL, &mem_mask, cellid) < 0)
+        return -1;
+
+    if (mem_mask) {
+         if (!virNumaNodesetIsAvailable(mem_mask))
+            return -1;
+        /* Cloud-hypervisor accept a single Host Node per memory zone */
+        if (virBitmapCountBits(mem_mask) > 1) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+            ("Multiple Host Nodes per memory node is not supported in CH Driver"));
+            return -1;
+        }
+        if (virStrToLong_uip(virBitmapFormat(mem_mask), NULL, 10, &host_node) < 0)
+            return -1;
+        if (virJSONValueObjectAppendNumberUint(mzone, "host_numa_node", host_node) < 0)
             return -1;
     }
-    if (virJSONValueObjectAppend(content, "devices", &devices) < 0)
+    if (virJSONValueArrayAppend(*mzones, &mzone) < 0)
+        return -1;
+
+    return 0;
+}
+
+/*
+{guest_numa_id: int,
+cpus: [int, int, ...],
+memory_zones: [Str, Str],
+
+}
+*/
+static int
+virCHMonitorBuildNumaNodeJson(virDomainDef *vmdef,
+                             virJSONValue *numaconfigs, size_t cellid,
+                             virJSONValue **mzones)
+{
+    size_t i;
+    g_autoptr(virJSONValue) numa_config = virJSONValueNewObject();
+    g_autoptr(virJSONValue) cpus = virJSONValueNewArray();
+    g_autoptr(virJSONValue) mzone_ids = virJSONValueNewArray();
+    virBitmap *cpumask = virDomainNumaGetNodeCpumask(vmdef->numa, cellid);
+    char *zone_id = g_strdup_printf("mz%ld", cellid);
+
+
+    virJSONValueObjectAppendNumberUint(numa_config, "guest_numa_id", cellid);
+
+    for (i=0; i<virBitmapSize(cpumask); i++) {
+        if (virBitmapIsBitSet(cpumask, i)) {
+            g_autoptr(virJSONValue) cpu_id = virJSONValueNewNumberLong(i);
+            if (virJSONValueArrayAppend(cpus, &cpu_id) < 0)
+                return -1;
+        }
+    }
+
+    if (virJSONValueObjectAppend(numa_config, "cpus", &cpus) < 0)
+        return -1;
+
+    if (virCHMonitorBuildMemZoneJson(vmdef, cellid, zone_id, mzones) < 0)
+        return -1;
+    if (virJSONValueArrayAppendString(mzone_ids, zone_id) < 0)
+        return -1;
+    if (virJSONValueObjectAppend(numa_config, "memory_zones", &mzone_ids) < 0)
+        return -1;
+     if (virJSONValueArrayAppend(numaconfigs, &numa_config) < 0)
         return -1;
 
     return 0;
@@ -536,21 +621,38 @@ static int
 virCHMonitorBuildNumaNodesJson(virJSONValue *content, virDomainDef *vmdef)
 {
     size_t i;
-    virJSONValue **numaNodes = NULL;
-    size_t ncells = virDomainNumaGetNodeCount(def->numa);
+    g_autoptr(virJSONValue) numaNodes = virJSONValueNewArray();
+    size_t ncells = virDomainNumaGetNodeCount(vmdef->numa);
+    g_autoptr(virJSONValue) mem_config = virJSONValueNewObject();
+    g_autoptr(virJSONValue) mem_zones = virJSONValueNewArray();
+
+
+
+    // Add memory config of size 0. Adding this will tell CH to use memory zones
+    if (virJSONValueObjectAppendNumberUint(mem_config, "size", 0) < 0)
+    return -1;
+
 
     if (ncells == 0)
         return 0;
-
-    numaNodes = g_new0(virJSONValue *, ncells);
+    if (ncells > 1){
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("More than one Guest NUMA node is not supported in CH driver"));
+        return -1;
+    }
 
     for (i = 0; i < ncells; i++) {
-        if (virCHMonitorBuildNumaNodeJson(numaNodes, vmdef->hostdevs[i]) < 0)
+        if (virCHMonitorBuildNumaNodeJson(vmdef, numaNodes, i, &mem_zones) < 0)
             return -1;
     }
-    if (virJSONValueObjectAppend(content, "devices", &devices) < 0)
+    if (virJSONValueObjectAppend(content, "numa", &numaNodes) < 0)
         return -1;
 
+    // Append memory config with zones
+    if (virJSONValueObjectAppend(mem_config, "zones", &mem_zones) < 0)
+        return -1;
+    if (virJSONValueObjectAppend(content, "memory", &mem_config) < 0)
+        return -1;
     return 0;
 }
 
@@ -572,9 +674,15 @@ virCHMonitorBuildVMJson(virDomainObj *vm, virDomainDef *vmdef, char **jsonstr,
     if (virCHMonitorBuildCPUJson(content, vmdef) < 0)
         return -1;
 
-    if (virCHMonitorBuildMemoryJson(content, vmdef) < 0)
-        return -1;
-
+    if (virDomainNumaGetNodeCount(vmdef->numa) > 0) {
+        //TODO: Add memory with size 0 here
+        if (virCHMonitorBuildNumaNodesJson(content, vmdef) < 0)
+            return -1;
+    }
+    else {
+        if (virCHMonitorBuildMemoryJson(content, vmdef) < 0)
+            return -1;
+    }
     /*if (virCHMonitorBuildKernelRelatedJson(content, vmdef) < 0)
         return -1;*/
 
@@ -590,8 +698,6 @@ virCHMonitorBuildVMJson(virDomainObj *vm, virDomainDef *vmdef, char **jsonstr,
         return -1;
 
     if (virCHMonitorBuildDevicesJson(content, vmdef) < 0)
-        return -1;
-    if (virCHMonitorBuildNumaJson(content, vmdef) < 0)
         return -1;
 
     if (!(*jsonstr = virJSONValueToString(content, false)))
@@ -724,6 +830,9 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
 
     virCommandAddArg(cmd, "--api-socket");
     virCommandAddArgFormat(cmd, "fd=%d", socket_fd);
+    virCommandAddArg(cmd, "-v");
+    virCommandAddArg(cmd, "-v");
+    virCommandAddArg(cmd, "-v");
     virCommandPassFD(cmd, socket_fd, VIR_COMMAND_PASS_FD_CLOSE_PARENT);
 
     for (i = 0; i < priv->tapfdSize; i++) {
