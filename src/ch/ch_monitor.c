@@ -429,6 +429,11 @@ virCHMonitorBuildNetJson(virDomainObj *vm, virJSONValue *nets, virDomainNetDef *
             return -1;
     }
 
+    if (netdef->mtu) {
+        if (virJSONValueObjectAppendNumberInt(net, "mtu", netdef->mtu) < 0)
+            return -1;
+    }
+
     if (virJSONValueArrayAppend(nets, &net) < 0)
         return -1;
 
