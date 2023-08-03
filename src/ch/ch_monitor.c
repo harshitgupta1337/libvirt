@@ -930,7 +930,8 @@ virCHMonitorRefreshThreadInfo(virCHMonitor *mon)
             info[i].vcpuInfo.cpuid = cpuid;
             VIR_DEBUG("vcpu%d -> tid: %d", cpuid, tids[i]);
         } else if (STRPREFIX(data, "_disk") || STRPREFIX(data, "_net") ||
-                   STRPREFIX(data, "_rng")) {
+                   STRPREFIX(data, "__rng") || STRPREFIX(data, "iou-wrk") ||
+                   STRPREFIX(data, "__console")) {
             /* Prefixes used by cloud-hypervisor for IO Threads are captured at
              * https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/vmm/src/device_manager.rs */
             info[i].type = virCHThreadTypeIO;
