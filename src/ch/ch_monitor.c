@@ -305,162 +305,6 @@ virCHMonitorBuildDisksJson(virJSONValue *content, virDomainDef *vmdef)
     return 0;
 }
 
-static int
-virCHMonitorBuildNetJson(virDomainObj *vm, virJSONValue *nets, virDomainNetDef *netdef,
-                         size_t *nnicindexes, int **nicindexes)
-{
-    virDomainNetType netType = virDomainNetGetActualType(netdef);
-    char macaddr[VIR_MAC_STRING_BUFLEN];
-    virCHDomainObjPrivate *priv = vm->privateData;
-    g_autoptr(virJSONValue) net = NULL;
-    g_autoptr(virJSONValue) clh_tapfds, ch_tapfd = NULL;
-    int i = 0;
-    net = virJSONValueNewObject();
-
-    switch (netType) {
-    case VIR_DOMAIN_NET_TYPE_ETHERNET:
-            if (netdef->guestIP.nips == 1) {
-                const virNetDevIPAddr *ip = netdef->guestIP.ips[0];
-                g_autofree char *addr = NULL;
-                virSocketAddr netmask;
-                g_autofree char *netmaskStr = NULL;
-
-                if (!(addr = virSocketAddrFormat(&ip->address)))
-                    return -1;
-                if (virJSONValueObjectAppendString(net, "ip", addr) < 0)
-                    return -1;
-
-                if (virSocketAddrPrefixToNetmask(ip->prefix, &netmask, AF_INET) < 0) {
-                    virReportError(VIR_ERR_INTERNAL_ERROR,
-                                   _("Failed to translate net prefix %1$d to netmask"),
-                                   ip->prefix);
-                    return -1;
-                }
-                if (!(netmaskStr = virSocketAddrFormat(&netmask)))
-                    return -1;
-                if (virJSONValueObjectAppendString(net, "mask", netmaskStr) < 0)
-                    return -1;
-            } else if (netdef->guestIP.nips > 1) {
-                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                               _("ethernet type supports a single guest ip"));
-            }
-
-            /* network and bridge use a tap device, and direct uses a
-             * macvtap device
-             */
-            if (nicindexes && nnicindexes && netdef->ifname) {
-                int nicindex = 0;
-
-                if (virNetDevGetIndex(netdef->ifname, &nicindex) < 0)
-                    return -1;
-
-                VIR_APPEND_ELEMENT(*nicindexes, *nnicindexes, nicindex);
-            }
-            break;
-    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
-            if ((virDomainChrType)netdef->data.vhostuser->type != VIR_DOMAIN_CHR_TYPE_UNIX) {
-                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                           _("vhost_user type support UNIX socket in this CH"));
-                return -1;
-            } else {
-                if (virJSONValueObjectAppendString(net, "vhost_socket", netdef->data.vhostuser->data.nix.path) < 0)
-                    return -1;
-                if (virJSONValueObjectAppendBoolean(net, "vhost_user", true) < 0)
-                    return -1;
-            }
-        break;
-    case VIR_DOMAIN_NET_TYPE_NETWORK:
-        //TAP device is created and attached to selected bridge in chProcessNetworkPrepareDevices
-        //nothing more to do here
-        break;
-    case VIR_DOMAIN_NET_TYPE_BRIDGE:
-    case VIR_DOMAIN_NET_TYPE_DIRECT:
-    case VIR_DOMAIN_NET_TYPE_USER:
-    case VIR_DOMAIN_NET_TYPE_SERVER:
-    case VIR_DOMAIN_NET_TYPE_CLIENT:
-    case VIR_DOMAIN_NET_TYPE_MCAST:
-    case VIR_DOMAIN_NET_TYPE_INTERNAL:
-    case VIR_DOMAIN_NET_TYPE_HOSTDEV:
-    case VIR_DOMAIN_NET_TYPE_UDP:
-    case VIR_DOMAIN_NET_TYPE_VDPA:
-    case VIR_DOMAIN_NET_TYPE_VDS:
-    case VIR_DOMAIN_NET_TYPE_NULL:
-    case VIR_DOMAIN_NET_TYPE_LAST:
-    default:
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Only ethernet and vhost_user type network types are "
-                         "supported in this CH"));
-        return -1;
-    }
-
-    clh_tapfds = virJSONValueNewArray();
-    for (i=0; i< priv->tapfdSize; i++) {
-        ch_tapfd = virJSONValueNewNumberUint(priv->tapfd[i]);
-        virJSONValueArrayAppend(clh_tapfds, &ch_tapfd);
-    }
-
-    if (virJSONValueObjectAppend(net, "fds", &clh_tapfds) < 0)
-        return -1;
-
-    if (virJSONValueObjectAppendString(net, "mac", virMacAddrFormat(&netdef->mac, macaddr)) < 0)
-        return -1;
-
-
-    if (netdef->virtio != NULL) {
-        if (netdef->virtio->iommu == VIR_TRISTATE_SWITCH_ON) {
-            if (virJSONValueObjectAppendBoolean(net, "iommu", true) < 0)
-                return -1;
-        }
-    }
-    if (priv->tapfdSize) {
-        if (virJSONValueObjectAppendNumberInt(net, "num_queues", 2 * priv->tapfdSize) < 0)
-            return -1;
-    }
-
-    if (netdef->driver.virtio.rx_queue_size || netdef->driver.virtio.tx_queue_size) {
-        if (netdef->driver.virtio.rx_queue_size != netdef->driver.virtio.tx_queue_size) {
-            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-               _("virtio rx_queue_size option %1$d is not same with tx_queue_size %2$d"),
-               netdef->driver.virtio.rx_queue_size,
-               netdef->driver.virtio.tx_queue_size);
-            return -1;
-        }
-        if (virJSONValueObjectAppendNumberInt(net, "queue_size", netdef->driver.virtio.rx_queue_size) < 0)
-            return -1;
-    }
-
-    if (netdef->mtu) {
-        if (virJSONValueObjectAppendNumberInt(net, "mtu", netdef->mtu) < 0)
-            return -1;
-    }
-
-    if (virJSONValueArrayAppend(nets, &net) < 0)
-        return -1;
-
-    return 0;
-}
-
-static int
-virCHMonitorBuildNetsJson(virDomainObj *vm, virJSONValue *content, virDomainDef *vmdef,
-                          size_t *nnicindexes, int **nicindexes)
-{
-    g_autoptr(virJSONValue) nets = NULL;
-    size_t i;
-
-    if (vmdef->nnets > 0) {
-        nets = virJSONValueNewArray();
-
-        for (i = 0; i < vmdef->nnets; i++) {
-            if (virCHMonitorBuildNetJson(vm, nets, vmdef->nets[i],
-                                         nnicindexes, nicindexes) < 0)
-                return -1;
-        }
-        if (virJSONValueObjectAppend(content, "net", &nets) < 0)
-            return -1;
-    }
-
-    return 0;
-}
 
 static int
 virCHMonitorBuildDeviceJson(virJSONValue *devices,
@@ -515,8 +359,7 @@ virCHMonitorBuildDevicesJson(virJSONValue *content,
 }
 
 static int
-virCHMonitorBuildVMJson(virDomainObj *vm, virDomainDef *vmdef, char **jsonstr,
-                        size_t *nnicindexes, int **nicindexes)
+virCHMonitorBuildVMJson(virDomainDef *vmdef, char **jsonstr)
 {
     g_autoptr(virJSONValue) content = virJSONValueNewObject();
 
@@ -542,11 +385,6 @@ virCHMonitorBuildVMJson(virDomainObj *vm, virDomainDef *vmdef, char **jsonstr,
         return -1;
 
     if (virCHMonitorBuildDisksJson(content, vmdef) < 0)
-        return -1;
-
-
-    if (virCHMonitorBuildNetsJson(vm, content, vmdef,
-                                  nnicindexes, nicindexes) < 0)
         return -1;
 
     if (virCHMonitorBuildDevicesJson(content, vmdef) < 0)
@@ -621,8 +459,6 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
     g_autoptr(virCommand) cmd = NULL;
     char *logfile = NULL;
     int socket_fd = 0, logfd=0;
-    int i;
-    virCHDomainObjPrivate *priv = vm->privateData;
 
     if (virCHMonitorInitialize() < 0)
         return NULL;
@@ -683,11 +519,6 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
     virCommandAddArg(cmd, "--api-socket");
     virCommandAddArgFormat(cmd, "fd=%d", socket_fd);
     virCommandPassFD(cmd, socket_fd, VIR_COMMAND_PASS_FD_CLOSE_PARENT);
-
-    for (i = 0; i < priv->tapfdSize; i++) {
-        virCommandPassFD(cmd, priv->tapfd[i],
-                         VIR_COMMAND_PASS_FD_CLOSE_PARENT);
-    }
 
     /* launch Cloud-Hypervisor socket */
     if (virCommandRun(cmd, NULL) < 0)
@@ -981,9 +812,7 @@ virCHMonitorShutdownVMM(virCHMonitor *mon)
 }
 
 int
-virCHMonitorCreateVM(virCHMonitor *mon,
-                     size_t *nnicindexes,
-                     int **nicindexes)
+virCHMonitorCreateVM(virCHMonitor *mon)
 {
     g_autofree char *url = NULL;
     int responseCode = 0;
@@ -995,8 +824,7 @@ virCHMonitorCreateVM(virCHMonitor *mon,
     headers = curl_slist_append(headers, "Accept: application/json");
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    if (virCHMonitorBuildVMJson(mon->vm, mon->vm->def, &payload,
-                                nnicindexes, nicindexes) != 0)
+    if (virCHMonitorBuildVMJson(mon->vm->def, &payload) != 0)
         return -1;
 
     VIR_WITH_OBJECT_LOCK_GUARD(mon) {
