@@ -159,8 +159,7 @@ virCHMonitorPtr virCHMonitorOpen(virDomainObjPtr vm, virCHDriverPtr driver);
 virCHMonitorPtr virCHMonitorNew(virDomainObjPtr vm, virCHDriverPtr driver);
 void virCHMonitorClose(virCHMonitorPtr mon);
 
-int virCHMonitorCreateVM(virCHMonitorPtr mon,
-                         size_t *nnicindexes, int **nicindexes);
+int virCHMonitorCreateVM(virCHMonitorPtr mon);
 int virCHMonitorBootVM(virCHMonitorPtr mon);
 int virCHMonitorShutdownVM(virCHMonitorPtr mon);
 int virCHMonitorRebootVM(virCHMonitorPtr mon);

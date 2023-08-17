@@ -532,110 +532,6 @@ int virCHProcessSetupThreads(virDomainObjPtr vm)
 }
 
 /**
- * chProcessNetworkPrepareDevices
- */
-static int
-chProcessNetworkPrepareDevices(virCHDriverPtr driver, virDomainObjPtr vm)
-{
-    virDomainDefPtr def = vm->def;
-    size_t i;
-    virCHDomainObjPrivatePtr priv = vm->privateData;
-    g_autoptr(virConnect) conn = NULL;
-    int *tapfd = NULL;
-    size_t tapfdSize = 0;
-
-    for (i = 0; i < def->nnets; i++) {
-        virDomainNetDefPtr net = def->nets[i];
-        virDomainNetType actualType;
-
-        /* If appropriate, grab a physical device from the configured
-         * network's pool of devices, or resolve bridge device name
-         * to the one defined in the network definition.
-         */
-        if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
-            if (!conn && !(conn = virGetConnectNetwork())) {
-                return -1;
-            }
-            if (virDomainNetAllocateActualDevice(conn, def, net) < 0) {
-                return -1;
-            }
-        }
-
-        actualType = virDomainNetGetActualType(net);
-        if (actualType == VIR_DOMAIN_NET_TYPE_HOSTDEV &&
-            net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
-            /* Each type='hostdev' network device must also have a
-             * corresponding entry in the hostdevs array. For netdevs
-             * that are hardcoded as type='hostdev', this is already
-             * done by the parser, but for those allocated from a
-             * network / determined at runtime, we need to do it
-             * separately.
-             */
-            virDomainHostdevDefPtr hostdev = virDomainNetGetActualHostdev(net);
-            virDomainHostdevSubsysPCIPtr pcisrc = &hostdev->source.subsys.u.pci;
-
-            if (virDomainHostdevFind(def, hostdev, NULL) >= 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR,
-                               _("PCI device %04x:%02x:%02x.%x "
-                                 "allocated from network %s is already "
-                                 "in use by domain %s"),
-                               pcisrc->addr.domain, pcisrc->addr.bus,
-                               pcisrc->addr.slot, pcisrc->addr.function,
-                               net->data.network.name, def->name);
-                return -1;
-            }
-            if (virDomainHostdevInsert(def, hostdev) < 0)
-                return -1;
-        } else if (actualType == VIR_DOMAIN_NET_TYPE_USER ) {
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-              _("VIR_DOMAIN_NET_TYPE_USER is not a supported Network type"));
-        } else if (actualType == VIR_DOMAIN_NET_TYPE_NETWORK || actualType == VIR_DOMAIN_NET_TYPE_BRIDGE ) {
-            tapfdSize = net->driver.virtio.queues;
-            if (!tapfdSize)
-                tapfdSize = 1;
-            VIR_ERROR("tapfd: %lu", tapfdSize);
-
-            tapfd = g_new(int, tapfdSize);
-
-            memset(tapfd, -1, tapfdSize * sizeof(tapfd[0]));
-
-            if (chInterfaceBridgeConnect(def, driver,  net,
-                                       tapfd, &tapfdSize) < 0)
-                goto cleanup;
-
-            // Store tap information in Private Data
-            // This info will be used while generating Network Json
-            priv->tapfd = g_steal_pointer(&tapfd);
-            priv->tapfdSize = tapfdSize;
-        } else if (actualType == VIR_DOMAIN_NET_TYPE_ETHERNET) {
-            tapfdSize = net->driver.virtio.queues;
-            if (!tapfdSize)
-                tapfdSize = 1;
-
-            tapfd = g_new(int, tapfdSize);
-
-            memset(tapfd, -1, tapfdSize * sizeof(tapfd[0]));
-
-            if (chInterfaceEthernetConnect(def, driver, net,
-                                           tapfd, tapfdSize) < 0)
-                goto cleanup;
-
-            // Store tap information in Private Data
-            // This info will be used while generating Network Json
-            priv->tapfd = g_steal_pointer(&tapfd);
-            priv->tapfdSize = tapfdSize;
-        }
-    }
-
-    return 0;
-
- cleanup:
-    g_free(tapfd);
-    return -1;
-}
-
-
-/**
  * virCHProcessStart:
  * @driver: pointer to driver structure
  * @vm: pointer to virtual machine structure
@@ -655,18 +551,6 @@ int virCHProcessStart(virCHDriverPtr driver,
     size_t nnicindexes = 0;
     int ret = -1;
 
-    /* network devices must be "prepared" before hostdevs, because
-     * setting up a network device might create a new hostdev that
-     * will need to be setup.
-     */
-    VIR_DEBUG("Preparing network devices");
-    if (chProcessNetworkPrepareDevices(driver, vm) < 0)
-        goto cleanup;
-
-    /* Bring up netdevs before starting CPUs */
-    if (chInterfaceStartDevices(vm->def) < 0)
-       return -1;
-
     VIR_DEBUG("Preparing host devices");
     if (chHostdevPrepareDomainDevices(driver, vm->def,
                                       VIR_HOSTDEV_COLD_BOOT) < 0)
@@ -680,8 +564,7 @@ int virCHProcessStart(virCHDriverPtr driver,
             goto cleanup;
         }
 
-        if (virCHMonitorCreateVM(priv->monitor,
-                                 &nnicindexes, &nicindexes) < 0) {
+        if (virCHMonitorCreateVM(priv->monitor) < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                         _("failed to create guest VM"));
             goto cleanup;
