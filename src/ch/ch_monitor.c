@@ -362,7 +362,8 @@ virCHMonitorBuildDevicesJson(virJSONValue *content,
 /* Build Net Json and return FDs to send to CH */
 int
 virCHMonitorBuildNetJson(virDomainObj *vm, virCHDriver *driver,
-                        virDomainNetDef *netdef, char **jsonstr, int *fds)
+                        virDomainNetDef *netdef, char **jsonstr, int *fds,
+                        size_t *nnicindexes, int **nicindexes)
 {
     virDomainNetType actualType = virDomainNetGetActualType(netdef);
     virDomainDef *vmdef = vm->def;
@@ -401,7 +402,12 @@ virCHMonitorBuildNetJson(virDomainObj *vm, virCHDriver *driver,
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                             _("ethernet type supports a single guest ip"));
         }
-
+        if (nicindexes && nnicindexes && netdef->ifname) {
+            int nicindex = 0;
+            if (virNetDevGetIndex(netdef->ifname, &nicindex) < 0)
+                return -1;
+            VIR_APPEND_ELEMENT(*nicindexes, *nnicindexes, nicindex);
+        }
         break;
     case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
     case VIR_DOMAIN_NET_TYPE_NETWORK:
