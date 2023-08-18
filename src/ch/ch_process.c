@@ -535,7 +535,8 @@ int virCHProcessSetupThreads(virDomainObjPtr vm)
 
 static int
 chProcessAddNetworkDevices(virDomainObj *vm, virCHDriver *driver,
-                            virCHMonitor *mon, virDomainDef *vmdef) {
+                            virCHMonitor *mon, virDomainDef *vmdef,
+                            size_t *nnicindexes, int **nicindexes) {
 
     int i, j, fd_len, mon_sockfd, http_res;
     int *fds = NULL;
@@ -586,7 +587,8 @@ chProcessAddNetworkDevices(virDomainObj *vm, virCHDriver *driver,
         fds = malloc(sizeof(int)*fd_len);
         memset(fds, -1, fd_len * sizeof(int));
         if (virCHMonitorBuildNetJson(vm, driver, vm->def->nets[i],
-                                    &payload, fds) < 0) {
+                                    &payload, fds,
+                                    nnicindexes, nicindexes) < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                            _("Failed to build net json"));
             free(fds);
@@ -677,20 +679,19 @@ int virCHProcessStart(virCHDriverPtr driver,
     vm->def->id = vm->pid;
     priv->machineName = virCHDomainGetMachineName(vm);
 
+    // Send NIC FDs with AddNet API. Do this before booting up the Guest
+    if (chProcessAddNetworkDevices(vm, driver, priv->monitor, vm->def,
+                                    &nnicindexes, &nicindexes) <0 ) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Failed while setting up Guest Network"));
+        goto cleanup;
+    }
+
     if (chSetupCgroup(vm, nnicindexes, nicindexes) < 0)
         goto cleanup;
 
     if (virCHProcessInitCpuAffinity(vm) < 0)
         goto cleanup;
-
-    /* Send NIC FDs with AddNet API. Do this after VM Creation but before
-     * booting up the Guest
-     */
-    if (chProcessAddNetworkDevices(vm, driver, priv->monitor, vm->def) <0 ) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Failed while setting up Guest Network"));
-        goto cleanup;
-    }
 
     /* Bring up netdevs before starting CPUs */
     if (chInterfaceStartDevices(vm->def) < 0)
