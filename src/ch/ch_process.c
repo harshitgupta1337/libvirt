@@ -38,6 +38,8 @@
 #include "virjson.h"
 #include "virlog.h"
 #include "virpidfile.h"
+#include "virstring.h"
+#include "virsocket.h"
 
 #define VIR_FROM_THIS VIR_FROM_CH
 
@@ -531,6 +533,107 @@ int virCHProcessSetupThreads(virDomainObjPtr vm)
     return ret;
 }
 
+static int
+chProcessAddNetworkDevices(virDomainObj *vm, virCHDriver *driver,
+                            virCHMonitor *mon, virDomainDef *vmdef) {
+
+    int i, j, fd_len, mon_sockfd, http_res;
+    int *fds = NULL;
+    g_autoptr(virJSONValue) net = NULL;
+    g_autofree char *payload = NULL;
+
+    struct sockaddr_un server_addr;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) http_headers = VIR_BUFFER_INITIALIZER;
+    int ret;
+
+    mon_sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (mon_sockfd < 0) {
+        virReportSystemError(errno, "%s", _("Unable to open UNIX socket"));
+        return -1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sun_family = AF_UNIX;
+    if (virStrcpyStatic(server_addr.sun_path, mon->socketpath) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("UNIX socket path '%1$s' too long"),
+                       mon->socketpath);
+        return -1;
+    }
+
+    if (connect(mon_sockfd, (struct sockaddr *)&server_addr,
+                    sizeof(server_addr)) == -1) {
+        perror("connect");
+        close(mon_sockfd);
+        return -1;
+    }
+
+    // Append HTTP headers for AddNet API request
+    virBufferAsprintf(&http_headers, "PUT /api/v1/vm.add-net HTTP/1.1\r\n");
+    virBufferAsprintf(&http_headers, "Host: localhost\r\n");
+    virBufferAsprintf(&http_headers, "Content-Type: application/json\r\n");
+
+    for (i = 0; i < vmdef->nnets; i++) {
+        fd_len = vm->def->nets[i]->driver.virtio.queues;
+        if (!fd_len) {
+            /* "queues" here refers to Queue Pairs. When zero, initialize
+             * queue pairs to 1.
+             */
+            fd_len = vm->def->nets[i]->driver.virtio.queues = 1;
+        }
+
+        fds = malloc(sizeof(int)*fd_len);
+        memset(fds, -1, fd_len * sizeof(int));
+        if (virCHMonitorBuildNetJson(vm, driver, vm->def->nets[i],
+                                    &payload, fds) < 0) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("Failed to build net json"));
+            free(fds);
+            goto err;
+        }
+
+        virBufferAsprintf(&buf, "%s", virBufferCurrentContent(&http_headers));
+        virBufferAsprintf(&buf, "Content-Length: %ld\r\n\r\n",strlen(payload));
+        virBufferAsprintf(&buf,"%s",payload);
+
+        payload = virBufferContentAndReset(&buf);
+
+        ret = virSocketSendMsgWithFD(mon_sockfd, payload, fds, fd_len);
+        if (ret < 0) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("Failed to Send Network FDs to CH"));
+            free(fds);
+            goto err;
+        }
+
+        // Close sent Tap FDs in Libvirt
+        for (j=0; j<fd_len; j++) {
+            close(fds[j]);
+        }
+        free(fds);
+
+        // Process the response from CH
+        http_res = virSocketRecvHttpResponse(mon_sockfd);
+        if (http_res < 0) {
+            VIR_ERROR("Failed while receiving response from CH");
+            goto err;
+        }
+        if (http_res!=204 && http_res!=200) {
+            VIR_ERROR("Unexpected response from CH");
+            goto err;
+        }
+    }
+
+    close(mon_sockfd);
+    return 0;
+
+err:
+    close(mon_sockfd);
+    return -1;
+}
+
+
 /**
  * virCHProcessStart:
  * @driver: pointer to driver structure
@@ -579,6 +682,19 @@ int virCHProcessStart(virCHDriverPtr driver,
 
     if (virCHProcessInitCpuAffinity(vm) < 0)
         goto cleanup;
+
+    /* Send NIC FDs with AddNet API. Do this after VM Creation but before
+     * booting up the Guest
+     */
+    if (chProcessAddNetworkDevices(vm, driver, priv->monitor, vm->def) <0 ) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Failed while setting up Guest Network"));
+        goto cleanup;
+    }
+
+    /* Bring up netdevs before starting CPUs */
+    if (chInterfaceStartDevices(vm->def) < 0)
+       return -1;
 
     if (virCHMonitorBootVM(priv->monitor) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",

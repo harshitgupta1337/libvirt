@@ -178,3 +178,8 @@ int virCHMonitorGetInfo(virCHMonitorPtr mon, virJSONValuePtr *info);
 int
 virCHMonitorResizeCPU(virCHMonitorPtr mon,
                       unsigned int nvcpus);
+
+int
+virCHMonitorBuildNetJson(virDomainObj *vm, virCHDriver *driver,
+                        virDomainNetDef *netdef, char **jsonstr, int *fds);
+

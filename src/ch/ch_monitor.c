@@ -29,6 +29,7 @@
 
 #include <curl/curl.h>
 
+#include "datatypes.h"
 #include "ch_conf.h"
 #include "ch_domain.h"
 #include "ch_monitor.h"
@@ -339,6 +340,113 @@ virCHMonitorBuildResizeCPUsJson(virJSONValuePtr content, unsigned int nvcpus)
 
     return 0;
 }
+
+/* Build and return net json & FDs to send to CH */
+int
+virCHMonitorBuildNetJson(virDomainObj *vm, virCHDriver *driver,
+                        virDomainNetDef *netdef, char **jsonstr, int *fds)
+{
+    virDomainNetType actualType = virDomainNetGetActualType(netdef);
+    virDomainDef *vmdef = vm->def;
+    char macaddr[VIR_MAC_STRING_BUFLEN];
+    g_autoptr(virJSONValue) net = virJSONValueNewObject();
+    g_autoptr(virConnect) conn = NULL;
+
+    switch (actualType) {
+    case VIR_DOMAIN_NET_TYPE_ETHERNET:
+        if (chInterfaceEthernetConnect(vmdef, driver, netdef,
+                                        fds, netdef->driver.virtio.queues) < 0)
+                return -1;
+
+        if (netdef->guestIP.nips == 1) {
+            const virNetDevIPAddr *ip = netdef->guestIP.ips[0];
+            g_autofree char *addr = NULL;
+            virSocketAddr netmask;
+            g_autofree char *netmaskStr = NULL;
+
+            if (!(addr = virSocketAddrFormat(&ip->address)))
+                return -1;
+            if (virJSONValueObjectAppendString(net, "ip", addr) < 0)
+                return -1;
+
+            if (virSocketAddrPrefixToNetmask(ip->prefix, &netmask, AF_INET) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("Failed to translate net prefix %1$d to netmask"),
+                            ip->prefix);
+                return -1;
+            }
+            if (!(netmaskStr = virSocketAddrFormat(&netmask)))
+                return -1;
+
+            if (virJSONValueObjectAppendString(net, "mask", netmaskStr) < 0)
+                return -1;
+
+        } else if (netdef->guestIP.nips > 1) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                            _("ethernet type supports a single guest ip"));
+        }
+
+        break;
+    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
+    case VIR_DOMAIN_NET_TYPE_NETWORK:
+    case VIR_DOMAIN_NET_TYPE_BRIDGE:
+    case VIR_DOMAIN_NET_TYPE_DIRECT:
+    case VIR_DOMAIN_NET_TYPE_USER:
+    case VIR_DOMAIN_NET_TYPE_SERVER:
+    case VIR_DOMAIN_NET_TYPE_CLIENT:
+    case VIR_DOMAIN_NET_TYPE_MCAST:
+    case VIR_DOMAIN_NET_TYPE_INTERNAL:
+    case VIR_DOMAIN_NET_TYPE_HOSTDEV:
+    case VIR_DOMAIN_NET_TYPE_UDP:
+    case VIR_DOMAIN_NET_TYPE_LAST:
+    default:
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                       _("Unsupported Network type %d"), actualType);
+        return -1;
+    }
+    if (virJSONValueObjectAppendString(net, "mac",
+                            virMacAddrFormat(&netdef->mac, macaddr)) < 0)
+        return -1;
+
+    if (netdef->virtio != NULL) {
+        if (netdef->virtio->iommu == VIR_TRISTATE_SWITCH_ON) {
+            if (virJSONValueObjectAppendBoolean(net, "iommu", true) < 0)
+                return -1;
+        }
+    }
+
+    // Cloud-Hypervisor expects number of queues. 1 for rx and 1 for tx.
+    // Multiply QeueuPairs with 2 to provide total number of queues to CH
+    if (netdef->driver.virtio.queues) {
+        if (virJSONValueObjectAppendNumberInt(net, "num_queues",
+                                    2 * netdef->driver.virtio.queues) < 0)
+            return -1;
+    }
+
+    if (netdef->driver.virtio.rx_queue_size || netdef->driver.virtio.tx_queue_size) {
+        if (netdef->driver.virtio.rx_queue_size != netdef->driver.virtio.tx_queue_size) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+               _("virtio rx_queue_size option %1$d is not same with tx_queue_size %2$d"),
+               netdef->driver.virtio.rx_queue_size,
+               netdef->driver.virtio.tx_queue_size);
+            return -1;
+        }
+        if (virJSONValueObjectAppendNumberInt(net, "queue_size",
+                                    netdef->driver.virtio.rx_queue_size) < 0)
+            return -1;
+    }
+
+    if (netdef->mtu) {
+        if (virJSONValueObjectAppendNumberInt(net, "mtu", netdef->mtu) < 0)
+            return -1;
+    }
+
+    if (!(*jsonstr = virJSONValueToString(net, false)))
+        return -1;
+
+    return 0;
+}
+
 
 static int
 virCHMonitorBuildVMJson(virDomainDefPtr vmdef, char **jsonstr)

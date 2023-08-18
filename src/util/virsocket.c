@@ -23,6 +23,9 @@
 #include "virfile.h"
 
 #include <fcntl.h>
+#include <poll.h>
+
+#define PKT_TIMEOUT_MS 500 /* ms */
 
 #ifdef WIN32
 
@@ -485,6 +488,95 @@ virSocketRecvFD(int sock, int fdflags)
 
     return fd;
 }
+
+/* virSocketSendMsgWithFD send FDs along with payload on socket.
+   Return number of bytes sent on success, or -1 with errno set in case of error.
+*/
+int
+virSocketSendMsgWithFD(int sock, const char *payload, int *fds, size_t fd_len)
+{
+    struct msghdr msg;
+    struct iovec iov[1];
+    int ret;
+    char control[CMSG_SPACE(sizeof(int)*fd_len)];
+    struct cmsghdr *cmsg;
+
+    memset(&msg, 0, sizeof(msg));
+    memset(control, 0, sizeof(control));
+
+    iov[0].iov_base = (void *)payload;
+    iov[0].iov_len = strlen(payload);
+
+    msg.msg_iov = iov;
+    // Sending a sigle payload, set len to 1
+    msg.msg_iovlen = 1;
+
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+
+    cmsg = CMSG_FIRSTHDR(&msg);
+    if (!cmsg) {
+        perror("CMSG_FIRSTHDR returned NULL");
+        return -1;
+    }
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int)*fd_len);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * fd_len);
+
+    do {
+        ret = sendmsg(sock, &msg, 0);
+    } while (ret < 0 && errno == EINTR);
+
+    if (ret < 0) {
+      perror("sendmsg() failed");
+   }
+
+    return ret;
+}
+
+/* Return HTTP response from received message, or -1 on Error
+*/
+int virSocketRecvHttpResponse(int sock) {
+    struct pollfd pfds[1];
+    // ATM this is used to receive response from CH, which will fit within 1024
+    char buf[1024];
+    int response_code = -1, n, ret;
+
+    pfds[0].fd = sock;
+    pfds[0].events = POLLIN;
+
+    n = poll(pfds, G_N_ELEMENTS(pfds), PKT_TIMEOUT_MS);
+    if (n <= 0) {
+        if (n < 0) {
+            perror("Poll Call failed");
+            return -1;
+        }
+        if (n == 0) {
+            perror("Poll Call timed out");
+            return -1;
+        }
+    }
+
+    do {
+        ret = recv(sock, buf, sizeof(buf), 0);
+    } while (ret < 0 && (errno == EINTR));
+
+    if (ret < 0) {
+      perror("recvmsg() failed");
+      return -1;
+   }
+
+    // Parse the HTTP response code
+    sscanf(buf, "HTTP/1.%*d %d", &response_code);
+    if (response_code == -1) {
+        fprintf(stderr, "Failed to parse HTTP response code.\n");
+    }
+
+    return response_code;
+
+}
+
 #else /* WIN32 */
 int
 virSocketSendFD(int sock G_GNUC_UNUSED, int fd G_GNUC_UNUSED)
