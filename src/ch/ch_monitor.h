@@ -121,4 +121,5 @@ int virCHMonitorGetIOThreads(virCHMonitor *mon,
                              virDomainIOThreadInfo ***iothreads);
 int
 virCHMonitorBuildNetJson(virDomainObj *vm, virCHDriver *driver,
-                        virDomainNetDef *netdef, char **jsonstr, int *fds);
+                        virDomainNetDef *netdef, char **jsonstr, int *fds,
+                        size_t *nnicindexes, int **nicindexes);
