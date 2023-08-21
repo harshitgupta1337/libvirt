@@ -11,7 +11,6 @@ chInterfaceEthernetConnect(virDomainDef *def,
 int chInterfaceBridgeConnect(virDomainDef *def,
                            virCHDriver *driver,
                            virDomainNetDef *net,
-                           int *tapfd,
-                           size_t *tapfdSize);
+                           int *tapfd);
 
 int chInterfaceStartDevices(virDomainDef *def);
