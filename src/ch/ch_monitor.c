@@ -395,8 +395,17 @@ virCHMonitorBuildNetJson(virDomainObj *vm, virCHDriver *driver,
             }
         }
         break;
-    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
     case VIR_DOMAIN_NET_TYPE_NETWORK:
+        if (!conn && !(conn = virGetConnectNetwork()))
+                return -1;
+
+        if (virDomainNetAllocateActualDevice(conn, vmdef, netdef) < 0)
+                return -1;
+
+        if (chInterfaceBridgeConnect(vmdef, driver,  netdef, fds) < 0)
+            return -1;
+        break;
+    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
     case VIR_DOMAIN_NET_TYPE_BRIDGE:
     case VIR_DOMAIN_NET_TYPE_DIRECT:
     case VIR_DOMAIN_NET_TYPE_USER:
