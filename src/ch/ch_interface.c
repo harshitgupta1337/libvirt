@@ -148,7 +148,7 @@ chInterfaceEthernetConnect(virDomainDef *def,
  * @def: the definition of the VM
  * @driver: qemu driver data
  * @net: pointer to the VM's interface description
- * @tapfd: array of file descriptor return value for the new device
+ * @tapfds: array of file descriptor return value for the new device
  * @tapfdsize: number of file descriptors in @tapfd
  *
  * Called *only* called if actualType is VIR_DOMAIN_NET_TYPE_NETWORK or
@@ -159,8 +159,7 @@ int
 chInterfaceBridgeConnect(virDomainDef *def,
                            virCHDriver *driver,
                            virDomainNetDef *net,
-                           int *tapfd,
-                           size_t *tapfdSize)
+                           int *tapfds)
 {
     const char *brname;
     int ret = 0;
@@ -191,7 +190,7 @@ chInterfaceBridgeConnect(virDomainDef *def,
 
     if (driver->privileged) {
         if (virNetDevTapCreateInBridgePort(brname, &net->ifname, &net->mac,
-                                           def->uuid, tunpath, tapfd, *tapfdSize,
+                                           def->uuid, tunpath, tapfds, net->driver.virtio.queues,
                                            virDomainNetGetActualVirtPortProfile(net),
                                            virDomainNetGetActualVlan(net),
                                            virDomainNetGetActualPortOptionsIsolated(net),
@@ -238,8 +237,8 @@ chInterfaceBridgeConnect(virDomainDef *def,
  cleanup:
     if (ret < 0) {
         size_t i;
-        for (i = 0; i < *tapfdSize && tapfd[i] >= 0; i++)
-            VIR_FORCE_CLOSE(tapfd[i]);
+        for (i = 0; i < net->driver.virtio.queues && tapfds[i] >= 0; i++)
+            VIR_FORCE_CLOSE(tapfds[i]);
         if (template_ifname)
             VIR_FREE(net->ifname);
     }
