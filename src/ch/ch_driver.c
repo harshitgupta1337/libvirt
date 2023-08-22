@@ -1827,8 +1827,8 @@ static virHypervisorDriver chHypervisorDriver = {
     .nodeGetCPUMap = chNodeGetCPUMap,                       /* 8.0.0 */
     .domainSetNumaParameters = chDomainSetNumaParameters,   /* 8.1.0 */
     .domainGetNumaParameters = chDomainGetNumaParameters,   /* 8.1.0 */
-    .connectDomainEventRegisterAny = chConnectDomainEventRegisterAny,
-    .connectDomainEventDeregisterAny = chConnectDomainEventDeregisterAny,
+    .connectDomainEventRegisterAny = chConnectDomainEventRegisterAny, /* 9.6.0 */
+    .connectDomainEventDeregisterAny = chConnectDomainEventDeregisterAny, /* 9.6.0 */
 };
 
 static virConnectDriver chConnectDriver = {
