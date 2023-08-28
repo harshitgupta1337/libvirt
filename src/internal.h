@@ -145,13 +145,12 @@
  *
  * TODO: Remove after upgrading to GLib >= 2.60
  */
-#ifndef G_GNUC_FALLTHROUGH
+#undef G_GNUC_FALLTHROUGH
 # if __GNUC_PREREQ (7, 0)
 #  define G_GNUC_FALLTHROUGH __attribute__((fallthrough))
 # else
 #  define G_GNUC_FALLTHROUGH do {} while(0)
 # endif
-#endif
 
 #define VIR_WARNINGS_NO_CAST_ALIGN \
     _Pragma ("GCC diagnostic push") \
