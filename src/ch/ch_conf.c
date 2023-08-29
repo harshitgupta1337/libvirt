@@ -171,7 +171,7 @@ virCHDriverConfigDispose(void *obj)
     g_free(cfg->logDir);
 }
 
-int
+static int
 virCHVersionString(const char *str, unsigned long *version)
 {
     unsigned int major, minor = 0, micro = 0;
@@ -179,15 +179,15 @@ virCHVersionString(const char *str, unsigned long *version)
     /**
      * Remove the from "cloud-hypervisor " to last "/" if present any from version output
      * Below snippet will give something line v<>.<>.(any dirty data if any)
-     * 
+     *
      * upstream CLH release version : cloud-hypervisor v32.0.0
      * upstream CLH main branch build : cloud-hypervisor v33.0-104-ge0e3779e-dirty
      * msft CLH main branch build : cloud-hypervisor msft/v32.0.131-1-ga5d6db5c-dirty
     */
-    char *clh_string = "cloud-hypervisor ";
-    char *last_slash = strrchr(str, '/');
-    char *clh_string_start = strstr(str, clh_string);
-    char *version_string = "";
+    const char *clh_string = "cloud-hypervisor ";
+    const char *last_slash = strrchr(str, '/');
+    const char *clh_string_start = strstr(str, clh_string);
+    const char *version_string = "";
 
     if (clh_string_start == NULL){
         VIR_ERROR("No matching format found: %s\n", str);
