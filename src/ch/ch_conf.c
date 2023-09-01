@@ -172,6 +172,33 @@ virCHDriverConfigDispose(void *obj)
 
 #define MIN_VERSION ((15 * 1000000) + (0 * 1000) + (0))
 
+/**
+ * chPreProcessVersionString - crop branch, commit info and return just the version
+ */
+static char *
+chPreProcessVersionString(char *version)
+{
+    g_autofree char *new_version = version;
+    char *tmp_version;
+
+    if ((tmp_version = strrchr(version, '/')) != NULL) {
+        new_version = tmp_version + 1;
+    }
+
+    if (new_version[0] == 'v') {
+        new_version = new_version + 1;
+    }
+    // Duplicate the string in both cases. This would allow the calling method
+    // free the returned string in a consistent manner.
+    if ((tmp_version = strchr(new_version, '-')) != NULL) {
+        new_version = g_strndup(new_version, tmp_version - new_version);
+    } else{
+        new_version = g_strdup(new_version);
+    }
+
+    return g_steal_pointer(&new_version);
+
+}
 int
 chExtractVersion(virCHDriver *driver)
 {
@@ -193,19 +220,25 @@ chExtractVersion(virCHDriver *driver)
 
     tmp = help;
 
-    /* expected format: cloud-hypervisor v<major>.<minor>.<micro> */
-    if ((tmp = STRSKIP(tmp, "cloud-hypervisor v")) == NULL) {
+    /* Below are some example version formats and expected outputs:
+     *  cloud-hypervisor v32.0.0 (expected: 32.0.0)
+     *  cloud-hypervisor v33.0-104-ge0e3779e-dirty (expected: 33.0)
+     *  cloud-hypervisor testing/v32.0.131-1-ga5d6db5c-dirty (expected: 32.0.131)
+     */
+    if ((tmp = STRSKIP(tmp, "cloud-hypervisor ")) == NULL) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                        _("Unexpected output of cloud-hypervisor binary"));
         return -1;
     }
+
+    tmp = chPreProcessVersionString(tmp);
+    VIR_DEBUG("Cloud-Hypervisor version detected: %s", tmp);
 
     if (virStringParseVersion(&version, tmp, true) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Unable to parse cloud-hypervisor version: %1$s"), tmp);
         return -1;
     }
-
     if (version < MIN_VERSION) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                        _("Cloud-Hypervisor version is too old (v15.0 is the minimum supported version)"));
