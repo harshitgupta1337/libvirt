@@ -22,8 +22,14 @@
 #include "virsocket.h"
 #include "virutil.h"
 #include "virfile.h"
+#include "virlog.h"
 
 #include <fcntl.h>
+#include <poll.h>
+
+#define PKT_TIMEOUT_MS 500 /* ms */
+
+VIR_LOG_INIT("util.virsocket");
 
 #ifdef WIN32
 
@@ -482,6 +488,109 @@ virSocketRecvFD(int sock, int fdflags)
 
     return fd;
 }
+
+/**
+ * virSocketSendMsgWithFDs:
+ * @sock: socket to send payload and fds to
+ * @payload: payload to send
+ * @fds: array of fds to send
+ * @fds_len: len of fds array
+
+ * Send @fds along with @payload to @sock using SCM_RIGHTS.
+ * Return number of bytes sent on success, or -1 on error.
+ */
+int
+virSocketSendMsgWithFDs(int sock, const char *payload, int *fds, size_t fds_len)
+{
+    struct msghdr msg;
+    struct iovec iov[1]; /* Send a single payload, so set vector len to 1 */
+    int ret;
+    char control[CMSG_SPACE(sizeof(int)*fds_len)];
+    struct cmsghdr *cmsg;
+
+    memset(&msg, 0, sizeof(msg));
+    memset(control, 0, sizeof(control));
+
+    iov[0].iov_base = (void *) payload;
+    iov[0].iov_len = strlen(payload);
+
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 1;
+
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+
+    cmsg = CMSG_FIRSTHDR(&msg);
+    if (!cmsg) {
+        VIR_ERROR(_("Couldn't fit control msg header in msg"));
+        return -1;
+    }
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int) * fds_len);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * fds_len);
+
+    do {
+        ret = sendmsg(sock, &msg, 0);
+    } while (ret < 0 && errno == EINTR);
+
+    if (ret < 0)
+      return -1;
+
+    return ret;
+}
+
+/**
+ * virSocketRecvHttpResponse:
+ * @sock: socket to receive http response on
+ *
+ * This function polls @sock for HTTP response
+ * Returns HTTP response code from received message, or -1 on error.
+ */
+int virSocketRecvHttpResponse(int sock)
+{
+    struct pollfd pfds[1];
+    /* This is only used for responses from ch guests, which fit within
+     * 1024 buffer
+     */
+    char buf[1024];
+    int response_code, ret;
+
+    pfds[0].fd = sock;
+    pfds[0].events = POLLIN;
+
+    do {
+        ret = poll(pfds, G_N_ELEMENTS(pfds), PKT_TIMEOUT_MS);
+    } while (ret < 0 && errno == EINTR);
+
+    if (ret <= 0) {
+        if (ret < 0) {
+            VIR_ERROR(_("Poll on sock %1$d failed"), sock);
+        } else if (ret == 0) {
+            VIR_ERROR(_("Poll on sock %1$d timed out"), sock);
+        }
+        return -1;
+    }
+
+    do {
+        ret = recv(sock, buf, sizeof(buf), 0);
+    } while (ret < 0 && errno == EINTR);
+
+    if (ret < 0) {
+      VIR_ERROR(_("recv on sock %1$d failed"), sock);
+      return -1;
+   }
+
+    /* Parse the HTTP response code */
+    ret = sscanf(buf, "HTTP/1.%*d %d", &response_code);
+    if (ret != 1) {
+        VIR_ERROR(_("Failed to parse HTTP response code"));
+        return -1;
+    }
+
+    return response_code;
+}
+
 #else /* WIN32 */
 int
 virSocketSendFD(int sock G_GNUC_UNUSED, int fd G_GNUC_UNUSED)
