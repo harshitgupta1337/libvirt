@@ -3370,7 +3370,9 @@ virSecureEraseString;
 
 # util/virsocket.h
 virSocketRecvFD;
+virSocketRecvHttpResponse;
 virSocketSendFD;
+virSocketSendMsgWithFDs;
 
 
 # util/virsocketaddr.h
