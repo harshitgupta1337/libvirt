@@ -39,6 +39,7 @@
 #include "qemu_virtiofs.h"
 #include "domain_audit.h"
 #include "domain_cgroup.h"
+#include "domain_interface.h"
 #include "netdev_bandwidth_conf.h"
 #include "domain_nwfilter.h"
 #include "virlog.h"
@@ -1278,7 +1279,7 @@ qemuDomainAttachNetDevice(virQEMUDriver *driver,
     }
 
     /* Set device online immediately */
-    if (qemuInterfaceStartDevice(net) < 0)
+    if (virDomainInterfaceStartDevice(net) < 0)
         goto cleanup;
 
     qemuDomainInterfaceSetDefaultQDisc(driver, net);
@@ -4778,7 +4779,7 @@ qemuDomainRemoveNetDevice(virQEMUDriver *driver,
      * affect the parent device (e.g. macvtap passthrough mode sets
      * the parent device offline)
      */
-    ignore_value(qemuInterfaceStopDevice(net));
+    ignore_value(virDomainInterfaceStopDevice(net));
 
     qemuDomainObjEnterMonitor(vm);
     if (qemuMonitorRemoveNetdev(priv->mon, hostnet_name) < 0) {
