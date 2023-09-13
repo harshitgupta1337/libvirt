@@ -39,6 +39,7 @@
 #include "qemu_virtiofs.h"
 #include "domain_audit.h"
 #include "domain_cgroup.h"
+#include "domain_interface.h"
 #include "netdev_bandwidth_conf.h"
 #include "domain_nwfilter.h"
 #include "virlog.h"
@@ -1269,7 +1270,7 @@ qemuDomainAttachNetDevice(virQEMUDriver *driver,
     }
 
     /* Set device online immediately */
-    if (qemuInterfaceStartDevice(net) < 0)
+    if (virDomainInterfaceStartDevice(net) < 0)
         goto cleanup;
 
     qemuDomainInterfaceSetDefaultQDisc(driver, net);

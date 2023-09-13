@@ -74,6 +74,7 @@
 #include "virhostcpu.h"
 #include "domain_audit.h"
 #include "domain_cgroup.h"
+#include "domain_interface.h"
 #include "domain_nwfilter.h"
 #include "domain_postparse.h"
 #include "domain_validate.h"
@@ -3121,7 +3122,7 @@ qemuProcessStartCPUs(virQEMUDriver *driver, virDomainObj *vm,
     g_autoptr(virQEMUDriverConfig) cfg = virQEMUDriverGetConfig(driver);
 
     /* Bring up netdevs before starting CPUs */
-    if (qemuInterfaceStartDevices(vm->def) < 0)
+    if (virDomainInterfaceStartDevices(vm->def) < 0)
        return -1;
 
     VIR_DEBUG("Using lock state '%s'", NULLSTR(priv->lockState));

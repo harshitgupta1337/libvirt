@@ -37,12 +37,6 @@ int qemuInterfaceDirectConnect(virDomainDef *def,
                                size_t tapfdSize,
                                virNetDevVPortProfileOp vmop);
 
-int qemuInterfaceEthernetConnect(virDomainDef *def,
-                                 virQEMUDriver *driver,
-                                 virDomainNetDef *net,
-                                 int *tapfd,
-                                 size_t tapfdSize);
-
 int qemuInterfaceBridgeConnect(virDomainDef *def,
                                virQEMUDriver *driver,
                                virDomainNetDef *net,
