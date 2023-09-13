@@ -1630,6 +1630,12 @@ virDomainDriverNodeDeviceReset;
 virDomainDriverParseBlkioDeviceStr;
 virDomainDriverSetupPersistentDefBlkioParams;
 
+# hypervisor/domain_interface.h
+virDomainInterfaceEthernetConnect;
+virDomainInterfaceIsVnetCompatModel;
+virDomainInterfaceStartDevice;
+virDomainInterfaceStartDevices;
+
 
 # hypervisor/virclosecallbacks.h
 virCloseCallbacksDomainAdd;
