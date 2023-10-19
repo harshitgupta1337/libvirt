@@ -27,9 +27,13 @@
 #include "ch_monitor.h"
 #include "ch_process.h"
 #include "domain_cgroup.h"
+#include "domain_interface.h"
 #include "virerror.h"
+#include "virfile.h"
 #include "virjson.h"
 #include "virlog.h"
+#include "virstring.h"
+#include "ch_interface.h"
 
 #define VIR_FROM_THIS VIR_FROM_CH
 
@@ -449,12 +453,141 @@ virCHProcessSetupVcpus(virDomainObj *vm)
 }
 
 /**
+ * chProcessAddNetworkDevices:
+ * @driver: pointer to ch driver object
+ * @mon: pointer to the monitor object
+ * @vmdef: pointer to domain definition
+ * @nicindexes: returned array of FDs of guest interfaces
+ * @nnicindexes: returned number of network indexes
+ *
+ * Send tap fds to CH process via AddNet api. Capture the network indexes of
+ * guest interfaces in nicindexes.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+static int
+chProcessAddNetworkDevices(virCHDriver *driver,
+                           virCHMonitor *mon,
+                           virDomainDef *vmdef,
+                           int **nicindexes,
+                           size_t *nnicindexes)
+{
+    size_t i, j, tapfd_len;
+    int mon_sockfd, http_res;
+    g_autofree int *tapfds = NULL;
+    g_autoptr(virJSONValue) net = NULL;
+    struct sockaddr_un server_addr;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) http_headers = VIR_BUFFER_INITIALIZER;
+    int ret;
+
+    if (!virBitmapIsBitSet(driver->chCaps, CH_MULTIFD_IN_ADDNET)) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                  _("Guest networking is not supported by this version of ch"));
+        return -1;
+    }
+
+    mon_sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (mon_sockfd < 0) {
+        virReportSystemError(errno, "%s", _("Failed to open a UNIX socket"));
+        return -1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sun_family = AF_UNIX;
+    if (virStrcpyStatic(server_addr.sun_path, mon->socketpath) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("UNIX socket path '%1$s' too long"), mon->socketpath);
+        goto err;
+    }
+
+    if (connect(mon_sockfd, (struct sockaddr *)&server_addr,
+                sizeof(server_addr)) == -1) {
+        virReportSystemError(errno, "%s", _("Failed to connect to mon socket"));
+        goto err;
+    }
+
+    virBufferAddLit(&http_headers, "PUT /api/v1/vm.add-net HTTP/1.1\r\n");
+    virBufferAddLit(&http_headers, "Host: localhost\r\n");
+    virBufferAddLit(&http_headers, "Content-Type: application/json\r\n");
+
+    for (i = 0; i < vmdef->nnets; i++) {
+        g_autofree char *payload = NULL;
+        if (vmdef->nets[i]->driver.virtio.queues == 0) {
+            /* "queues" here refers to queue pairs. When 0, initialize
+             * queue pairs to 1.
+             */
+            vmdef->nets[i]->driver.virtio.queues = 1;
+        }
+        tapfd_len = vmdef->nets[i]->driver.virtio.queues;
+
+        if (virCHDomainValidateActualNetDef(vmdef->nets[i]) < 0) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("net definition failed validation"));
+            goto err;
+        }
+
+        tapfds = g_new0(int, tapfd_len);
+        memset(tapfds, -1, (tapfd_len) * sizeof(*tapfds));
+
+        /* Connect Guest interfaces */
+        if (virCHConnetNetworkInterfaces(driver, vmdef, vmdef->nets[i], tapfds,
+                                nicindexes, nnicindexes) < 0) {
+                                    goto err;
+        }
+
+        if (virCHMonitorBuildNetJson(vmdef->nets[i], &payload) < 0) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("Failed to build net json"));
+            goto err;
+        }
+
+        VIR_DEBUG("payload sent with net-add request to CH = %s", payload);
+
+        virBufferAsprintf(&buf, "%s", virBufferCurrentContent(&http_headers));
+        virBufferAsprintf(&buf, "Content-Length: %ld\r\n\r\n", strlen(payload));
+        virBufferAsprintf(&buf, "%s", payload);
+        payload = virBufferContentAndReset(&buf);
+
+        ret = virSocketSendMsgWithFDs(mon_sockfd, payload, tapfds, tapfd_len);
+        if (ret < 0) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("Failed to send net-add request to CH"));
+            goto err;
+        }
+
+        /* Close sent tap fds in Libvirt, as they have been dup()ed in ch */
+        for (j = 0; j < tapfd_len; j++) {
+            VIR_FORCE_CLOSE(tapfds[j]);
+        }
+
+        /* Process the response from CH */
+        http_res = virSocketRecvHttpResponse(mon_sockfd);
+        if (http_res < 0) {
+            VIR_ERROR(_("Failed while receiving response from CH"));
+            goto err;
+        }
+        if (http_res != 204 && http_res != 200) {
+            VIR_ERROR(_("Unexpected response from CH:  %1$d"), http_res);
+            goto err;
+        }
+    }
+
+    VIR_FORCE_CLOSE(mon_sockfd);
+    return 0;
+
+ err:
+    VIR_FORCE_CLOSE(mon_sockfd);
+    return -1;
+}
+
+/**
  * virCHProcessStart:
  * @driver: pointer to driver structure
  * @vm: pointer to virtual machine structure
  * @reason: reason for switching vm to running state
  *
- * Starts Cloud-Hypervisor listen on a local socket
+ * Starts Cloud-Hypervisor listening on a local socket
  *
  * Returns 0 on success or -1 in case of error
  */
@@ -483,8 +616,7 @@ virCHProcessStart(virCHDriver *driver,
             goto cleanup;
         }
 
-        if (virCHMonitorCreateVM(driver, priv->monitor,
-                                 &nnicindexes, &nicindexes) < 0) {
+        if (virCHMonitorCreateVM(driver, priv->monitor) < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                            _("failed to create guest VM"));
             goto cleanup;
@@ -494,6 +626,13 @@ virCHProcessStart(virCHDriver *driver,
     vm->pid = priv->monitor->pid;
     vm->def->id = vm->pid;
     priv->machineName = virCHDomainGetMachineName(vm);
+
+    if (chProcessAddNetworkDevices(driver, priv->monitor, vm->def,
+                                    &nicindexes, &nnicindexes) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Failed while adding guest interfaces"));
+        goto cleanup;
+    }
 
     if (virDomainCgroupSetupCgroup("ch", vm,
                                    nnicindexes, nicindexes,
@@ -506,6 +645,10 @@ virCHProcessStart(virCHDriver *driver,
 
     if (virCHProcessInitCpuAffinity(vm) < 0)
         goto cleanup;
+
+    /* Bring up netdevs before starting CPUs */
+    if (virDomainInterfaceStartDevices(vm->def) < 0)
+        return -1;
 
     if (virCHMonitorBootVM(priv->monitor) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -552,12 +695,23 @@ virCHProcessStop(virCHDriver *driver G_GNUC_UNUSED,
     int ret;
     int retries = 0;
     virCHDomainObjPrivate *priv = vm->privateData;
+    virCHDriverConfig *cfg = virCHDriverGetConfig(driver);
+    virDomainDef *def = vm->def;
+    size_t i;
 
     VIR_DEBUG("Stopping VM name=%s pid=%d reason=%d",
               vm->def->name, (int)vm->pid, (int)reason);
 
     if (priv->monitor) {
         g_clear_pointer(&priv->monitor, virCHMonitorClose);
+    }
+
+    /* de-activate netdevs after stopping vm */
+    ignore_value(virDomainInterfaceStopDevices(vm->def));
+
+    for (i = 0; i < def->nnets; i++) {
+        virDomainNetDef *net = def->nets[i];
+        virDomainInterfaceDeleteDevice(def, net, false, cfg->stateDir);
     }
 
  retry:
