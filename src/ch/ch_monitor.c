@@ -585,8 +585,13 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
                              socketdir);
         return NULL;
     }
-
     cmd = virCommandNew(vm->def->emulator);
+    /*cmd = virCommandNew("strace");
+    virCommandAddArg(cmd, "-ff");
+    virCommandAddArg(cmd, "-o");
+    virCommandAddArg(cmd, "/tmp/strace_ch.log");
+    virCommandAddArg(cmd, vm->def->emulator);*/
+
     virCommandSetUmask(cmd, 0x002);
     socket_fd = chMonitorCreateSocket(mon->socketpath);
     if (socket_fd < 0) {
@@ -595,7 +600,12 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
                              mon->socketpath);
         return NULL;
     }
+    virCommandAddArg(cmd, "-v");
+    virCommandAddArg(cmd, "-v");
 
+
+    virCommandAddArg(cmd, "--log-file");
+    virCommandAddArg(cmd, "/tmp/libvirt_ch.log");
     virCommandAddArg(cmd, "--api-socket");
     virCommandAddArgFormat(cmd, "fd=%d", socket_fd);
     virCommandPassFD(cmd, socket_fd, VIR_COMMAND_PASS_FD_CLOSE_PARENT);
