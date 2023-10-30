@@ -30276,7 +30276,6 @@ virDomainNetNotifyActualDevice(virConnectPtr conn,
 
 int
 virDomainNetReleaseActualDevice(virConnectPtr conn,
-                                virDomainDef *dom G_GNUC_UNUSED,
                                 virDomainNetDef *iface)
 {
     virNetworkPtr net = NULL;
