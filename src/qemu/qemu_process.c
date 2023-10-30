@@ -8365,7 +8365,6 @@ void qemuProcessStop(virQEMUDriver *driver,
     qemuDomainObjPrivate *priv = vm->privateData;
     virErrorPtr orig_err;
     virDomainDef *def = vm->def;
-    const virNetDevVPortProfile *vport = NULL;
     size_t i;
     g_autofree char *timestamp = NULL;
     g_autoptr(virQEMUDriverConfig) cfg = virQEMUDriverGetConfig(driver);
@@ -8508,71 +8507,13 @@ void qemuProcessStop(virQEMUDriver *driver,
     }
 
     qemuHostdevReAttachDomainDevices(driver, vm->def);
-
     for (i = 0; i < def->nnets; i++) {
         virDomainNetDef *net = def->nets[i];
-        vport = virDomainNetGetActualVirtPortProfile(net);
-        switch (virDomainNetGetActualType(net)) {
-        case VIR_DOMAIN_NET_TYPE_DIRECT:
-            if (QEMU_DOMAIN_NETWORK_PRIVATE(net)->created) {
-                virNetDevMacVLanDeleteWithVPortProfile(net->ifname, &net->mac,
-                                                       virDomainNetGetActualDirectDev(net),
-                                                       virDomainNetGetActualDirectMode(net),
-                                                       virDomainNetGetActualVirtPortProfile(net),
-                                                       cfg->stateDir);
-            }
-            break;
-        case VIR_DOMAIN_NET_TYPE_ETHERNET:
-            if (net->managed_tap != VIR_TRISTATE_BOOL_NO && net->ifname) {
-                ignore_value(virNetDevTapDelete(net->ifname, net->backend.tap));
-                VIR_FREE(net->ifname);
-            }
-            break;
-        case VIR_DOMAIN_NET_TYPE_BRIDGE:
-        case VIR_DOMAIN_NET_TYPE_NETWORK:
-#ifdef VIR_NETDEV_TAP_REQUIRE_MANUAL_CLEANUP
-            if (!(vport && vport->virtPortType == VIR_NETDEV_VPORT_PROFILE_OPENVSWITCH))
-                ignore_value(virNetDevTapDelete(net->ifname, net->backend.tap));
-#endif
-            break;
-        case VIR_DOMAIN_NET_TYPE_USER:
-        case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
-        case VIR_DOMAIN_NET_TYPE_SERVER:
-        case VIR_DOMAIN_NET_TYPE_CLIENT:
-        case VIR_DOMAIN_NET_TYPE_MCAST:
-        case VIR_DOMAIN_NET_TYPE_INTERNAL:
-        case VIR_DOMAIN_NET_TYPE_HOSTDEV:
-        case VIR_DOMAIN_NET_TYPE_UDP:
-        case VIR_DOMAIN_NET_TYPE_VDPA:
-        case VIR_DOMAIN_NET_TYPE_NULL:
-        case VIR_DOMAIN_NET_TYPE_VDS:
-        case VIR_DOMAIN_NET_TYPE_LAST:
-            /* No special cleanup procedure for these types. */
-            break;
-        }
-        /* release the physical device (or any other resources used by
-         * this interface in the network driver
-         */
-        if (vport) {
-            if (vport->virtPortType == VIR_NETDEV_VPORT_PROFILE_MIDONET) {
-                ignore_value(virNetDevMidonetUnbindPort(vport));
-            } else if (vport->virtPortType == VIR_NETDEV_VPORT_PROFILE_OPENVSWITCH) {
-                ignore_value(virNetDevOpenvswitchRemovePort(
-                                 virDomainNetGetActualBridgeName(net),
-                                 net->ifname));
-            }
-        }
-
-        /* kick the device out of the hostdev list too */
-        virDomainNetRemoveHostdev(def, net);
-        if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
-            if (conn || (conn = virGetConnectNetwork()))
-                virDomainNetReleaseActualDevice(conn, vm->def, net);
-            else
-                VIR_WARN("Unable to release network device '%s'", NULLSTR(net->ifname));
-        }
+        virDomainInterfaceDeleteDevice(def,
+                                       net,
+                                       QEMU_DOMAIN_NETWORK_PRIVATE(net)->created,
+                                       cfg->stateDir);
     }
-
  retry:
     if ((ret = virDomainCgroupRemoveCgroup(vm, priv->cgroup, priv->machineName)) < 0) {
         if (ret == -EBUSY && (retries++ < 5)) {

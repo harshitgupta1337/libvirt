@@ -21,8 +21,10 @@
 
 #include <config.h>
 
+#include "datatypes.h"
 #include "domain_audit.h"
 #include "domain_conf.h"
+#include "domain_driver.h"
 #include "domain_interface.h"
 #include "domain_nwfilter.h"
 #include "network_conf.h"
@@ -33,7 +35,10 @@
 #include "virlog.h"
 #include "virmacaddr.h"
 #include "virnetdevbridge.h"
+#include "virnetdevmidonet.h"
+#include "virnetdevopenvswitch.h"
 #include "virnetdevtap.h"
+
 
 #define VIR_FROM_THIS VIR_FROM_DOMAIN
 
@@ -367,4 +372,85 @@ virDomainInterfaceStopDevices(virDomainDef *def)
             return -1;
     }
     return 0;
+}
+
+/**
+ * virDomainInterfaceStopDevices:
+ * @def: domain definition
+ *
+ * Disconnect and delete domain interfaces.
+ */
+
+void
+virDomainInterfaceDeleteDevice(virDomainDef *def,
+                                virDomainNetDef *net,
+                                bool priv_net_created,
+                                char *stateDir)
+{
+    const virNetDevVPortProfile *vport = NULL;
+    g_autoptr(virConnect) conn = NULL;
+
+    vport = virDomainNetGetActualVirtPortProfile(net);
+    switch (virDomainNetGetActualType(net)) {
+    case VIR_DOMAIN_NET_TYPE_DIRECT:
+        if (priv_net_created) {
+            virNetDevMacVLanDeleteWithVPortProfile(net->ifname, &net->mac,
+                                                    virDomainNetGetActualDirectDev(net),
+                                                    virDomainNetGetActualDirectMode(net),
+                                                    virDomainNetGetActualVirtPortProfile(net),
+                                                    stateDir);
+        }
+        break;
+    case VIR_DOMAIN_NET_TYPE_ETHERNET:
+        if (net->managed_tap != VIR_TRISTATE_BOOL_NO && net->ifname) {
+            ignore_value(virNetDevTapDelete(net->ifname, net->backend.tap));
+            VIR_FREE(net->ifname);
+        }
+        break;
+    case VIR_DOMAIN_NET_TYPE_BRIDGE:
+    case VIR_DOMAIN_NET_TYPE_NETWORK:
+#ifdef VIR_NETDEV_TAP_REQUIRE_MANUAL_CLEANUP
+        if (!(vport && vport->virtPortType == VIR_NETDEV_VPORT_PROFILE_OPENVSWITCH))
+            ignore_value(virNetDevTapDelete(net->ifname, net->backend.tap));
+#endif
+        break;
+    case VIR_DOMAIN_NET_TYPE_USER:
+    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
+    case VIR_DOMAIN_NET_TYPE_SERVER:
+    case VIR_DOMAIN_NET_TYPE_CLIENT:
+    case VIR_DOMAIN_NET_TYPE_MCAST:
+    case VIR_DOMAIN_NET_TYPE_INTERNAL:
+    case VIR_DOMAIN_NET_TYPE_HOSTDEV:
+    case VIR_DOMAIN_NET_TYPE_UDP:
+    case VIR_DOMAIN_NET_TYPE_VDPA:
+    case VIR_DOMAIN_NET_TYPE_NULL:
+    case VIR_DOMAIN_NET_TYPE_VDS:
+    case VIR_DOMAIN_NET_TYPE_LAST:
+        /* No special cleanup procedure for these types. */
+        break;
+    }
+    /* release the physical device (or any other resources used by
+        * this interface in the network driver
+        */
+    if (vport) {
+        if (vport->virtPortType == VIR_NETDEV_VPORT_PROFILE_MIDONET) {
+            ignore_value(virNetDevMidonetUnbindPort(vport));
+        } else if (vport->virtPortType == VIR_NETDEV_VPORT_PROFILE_OPENVSWITCH) {
+            ignore_value(virNetDevOpenvswitchRemovePort(
+                                virDomainNetGetActualBridgeName(net),
+                                net->ifname));
+        }
+    }
+
+    /* kick the device out of the hostdev list too */
+    virDomainNetRemoveHostdev(def, net);
+    if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
+        if (conn || (conn = virGetConnectNetwork()))
+            virDomainNetReleaseActualDevice(conn, net);
+        else
+            VIR_WARN("Unable to release network device '%s'", NULLSTR(net->ifname));
+    }
+
+
+
 }

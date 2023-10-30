@@ -1633,6 +1633,7 @@ virDomainDriverSetupPersistentDefBlkioParams;
 # hypervisor/domain_interface.h
 virDomainInterfaceEthernetConnect;
 virDomainInterfaceIsVnetCompatModel;
+virDomainInterfaceDeleteDevice;
 virDomainInterfaceStartDevice;
 virDomainInterfaceStartDevices;
 virDomainInterfaceStopDevice;

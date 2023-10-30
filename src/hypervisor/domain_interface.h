@@ -39,3 +39,7 @@ int virDomainInterfaceStartDevice(virDomainNetDef *net);
 int virDomainInterfaceStartDevices(virDomainDef *def);
 int virDomainInterfaceStopDevice(virDomainNetDef *net);
 int virDomainInterfaceStopDevices(virDomainDef *def);
+void virDomainInterfaceDeleteDevice(virDomainDef *def,
+                                virDomainNetDef *net,
+                                bool priv_net_created,
+                                char *stateDir);
