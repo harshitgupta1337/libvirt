@@ -522,6 +522,7 @@ virSocketSendMsgWithFD(int sock, const char *payload, int *fds, size_t fd_len)
     cmsg->cmsg_type = SCM_RIGHTS;
     memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * fd_len);
 
+    //SCM_RIGHTS
     do {
         ret = sendmsg(sock, &msg, 0);
     } while (ret < 0 && errno == EINTR);

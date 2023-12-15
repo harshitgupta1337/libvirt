@@ -519,6 +519,20 @@ virCHMonitorBuildVMJson(virDomainDef *vmdef, char **jsonstr)
 }
 
 static int
+virCHMonitorBuildKeyValueStringJson(char **jsonstr, const char *key, const char *value)
+{
+    g_autoptr(virJSONValue) content = virJSONValueNewObject();
+
+    if (virJSONValueObjectAppendString(content, key, value) < 0)
+        return -1;
+
+    if (!(*jsonstr = virJSONValueToString(content, false)))
+        return -1;
+
+    return 0;
+}
+
+static int
 chMonitorCreateSocket(const char *socket_path)
 {
     struct sockaddr_un addr;
@@ -575,11 +589,12 @@ chMonitorCreateSocket(const char *socket_path)
 }
 
 virCHMonitor *
-virCHMonitorNew(virDomainObj *vm, const char *socketdir)
+virCHMonitorNew(virDomainObj *vm, virCHDriverConfig *cfg)
 {
     g_autoptr(virCHMonitor) mon = NULL;
     g_autoptr(virCommand) cmd = NULL;
     char *logfile = NULL;
+    char *socketdir = cfg->stateDir;
     int socket_fd = 0, logfd=0;
 
     if (virCHMonitorInitialize() < 0)
@@ -607,6 +622,13 @@ virCHMonitorNew(virDomainObj *vm, const char *socketdir)
         virReportSystemError(errno,
                              _("Cannot create CH log directory '%1$s'"),
                              CH_LOG_DIR);
+        return NULL;
+    }
+
+    if (g_mkdir_with_parents(cfg->saveDir, 0777) < 0) {
+        virReportSystemError(errno,
+                             _("Cannot create save directory '%1$s'"),
+                             cfg->saveDir);
         return NULL;
     }
 
@@ -998,6 +1020,118 @@ virCHMonitorResumeVM(virCHMonitor *mon)
 {
     return virCHMonitorPutNoContent(mon, URL_VM_RESUME);
 }
+
+int
+virCHMonitorSaveVM(virCHMonitor *mon, const char *to)
+{
+    g_autofree char *url = NULL;
+    int responseCode = 0;
+    int ret = -1;
+    g_autofree char *snapshot_fields = NULL;
+    g_autofree char *destination_url = NULL;
+    struct curl_slist *headers = NULL;
+    struct curl_data data = {0};
+
+    url = g_strdup_printf("%s/%s", URL_ROOT, URL_VM_SAVE);
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    destination_url = g_strdup_printf("file://%s", to);
+    if (virCHMonitorBuildKeyValueStringJson(&snapshot_fields, "destination_url", destination_url) != 0)
+        return -1;
+
+    VIR_WITH_OBJECT_LOCK_GUARD(mon) {
+        /* reset all options of a libcurl session handle at first */
+        curl_easy_reset(mon->handle);
+
+        curl_easy_setopt(mon->handle, CURLOPT_UNIX_SOCKET_PATH, mon->socketpath);
+        curl_easy_setopt(mon->handle, CURLOPT_URL, url);
+        curl_easy_setopt(mon->handle, CURLOPT_CUSTOMREQUEST, "PUT");
+        curl_easy_setopt(mon->handle, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(mon->handle, CURLOPT_POSTFIELDS, snapshot_fields);
+        curl_easy_setopt(mon->handle, CURLOPT_WRITEFUNCTION, curl_callback);
+        curl_easy_setopt(mon->handle, CURLOPT_WRITEDATA, (void *)&data);
+
+        responseCode = virCHMonitorCurlPerform(mon->handle);
+    }
+
+    data.content = g_realloc(data.content, data.size + 1);
+    data.content[data.size] = 0;
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                data.content);
+
+    if (responseCode == 200 || responseCode == 204) {
+        ret = 0;
+    }
+    else {
+        data.content = g_realloc(data.content, data.size + 1);
+        data.content[data.size] = 0;
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       data.content);
+    }
+
+    g_free(data.content);
+    /* reset the libcurl handle to avoid leaking a stack pointer to data */
+    curl_easy_reset(mon->handle);
+    curl_slist_free_all(headers);
+    return ret;
+}
+
+int
+virCHMonitorRestoreVM(virCHMonitor *mon, const char *from)
+{
+    g_autofree char *url = NULL;
+    int responseCode = 0;
+    int ret = -1;
+    g_autofree char *restore_fields = NULL;
+    g_autofree char *source_url = NULL;
+    struct curl_slist *headers = NULL;
+    struct curl_data data = {0};
+
+    url = g_strdup_printf("%s/%s", URL_ROOT, URL_VM_RESTORE);
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    source_url = g_strdup_printf("file://%s", from);
+    if (virCHMonitorBuildKeyValueStringJson(&restore_fields, "source_url", source_url) != 0)
+        return -1;
+
+    VIR_WITH_OBJECT_LOCK_GUARD(mon) {
+        /* reset all options of a libcurl session handle at first */
+        curl_easy_reset(mon->handle);
+
+        curl_easy_setopt(mon->handle, CURLOPT_UNIX_SOCKET_PATH, mon->socketpath);
+        curl_easy_setopt(mon->handle, CURLOPT_URL, url);
+        curl_easy_setopt(mon->handle, CURLOPT_CUSTOMREQUEST, "PUT");
+        curl_easy_setopt(mon->handle, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(mon->handle, CURLOPT_POSTFIELDS, restore_fields);
+        curl_easy_setopt(mon->handle, CURLOPT_WRITEFUNCTION, curl_callback);
+        curl_easy_setopt(mon->handle, CURLOPT_WRITEDATA, (void *)&data);
+
+        responseCode = virCHMonitorCurlPerform(mon->handle);
+    }
+    data.content = g_realloc(data.content, data.size + 1);
+    data.content[data.size] = 0;
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                data.content);
+
+    if (responseCode == 200 || responseCode == 204) {
+        ret = 0;
+    }
+    else {
+        data.content = g_realloc(data.content, data.size + 1);
+        data.content[data.size] = 0;
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       data.content);
+    }
+
+    g_free(data.content);
+    /* reset the libcurl handle to avoid leaking a stack pointer to data */
+    curl_easy_reset(mon->handle);
+    curl_slist_free_all(headers);
+    return ret;
+}
+
 
 /**
  * virCHMonitorGetInfo:

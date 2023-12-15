@@ -54,7 +54,7 @@ virCHProcessConnectMonitor(virCHDriver *driver,
     virCHMonitor *monitor = NULL;
     virCHDriverConfig *cfg = virCHDriverGetConfig(driver);
 
-    monitor = virCHMonitorNew(vm, cfg->stateDir);
+    monitor = virCHMonitorNew(vm, cfg);
 
     virObjectUnref(cfg);
     return monitor;
@@ -481,6 +481,7 @@ chProcessAddNetworkDevices(virDomainObj *vm, virCHDriver *driver,
 
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sun_family = AF_UNIX;
+
     if (virStrcpyStatic(server_addr.sun_path, mon->socketpath) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("UNIX socket path '%1$s' too long"),
@@ -530,6 +531,8 @@ chProcessAddNetworkDevices(virDomainObj *vm, virCHDriver *driver,
             free(fds);
             goto err;
         }
+
+        // /dev/net/tun
 
         // Close sent Tap FDs in Libvirt
         for (j=0; j<fd_len; j++) {
@@ -705,6 +708,62 @@ virCHProcessStop(virCHDriver *driver G_GNUC_UNUSED,
     g_clear_pointer(&priv->machineName, g_free);
 
     virDomainObjSetState(vm, VIR_DOMAIN_SHUTOFF, reason);
+
+    return 0;
+}
+
+// Perform actual restore operation
+int
+chDomainStartRestore(virCHDriver *driver, virDomainObj *vm, const char *from)
+{
+    virCHDomainObjPrivate *priv = vm->privateData;
+    g_autoptr(virCHDriverConfig) cfg = virCHDriverGetConfig(priv->driver);
+    // g_autofree int *nicindexes = NULL;
+    // size_t nnicindexes = 0;
+
+    // TODO: Do similar stuff as virCHProcessStart
+    // i.e, preparedev, cgroup,
+    if (!priv->monitor) {
+        /* And we can get the first monitor connection now too */
+        if (!(priv->monitor = virCHProcessConnectMonitor(driver, vm))) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("failed to create connection to CH socket"));
+            return -1;
+        }
+    }
+
+    vm->pid = priv->monitor->pid;
+    vm->def->id = vm->pid;
+    priv->machineName = virCHDomainGetMachineName(vm);
+
+    // // Send NIC FDs with AddNet API. Do this before booting up the Guest
+    // if (chProcessAddNetworkDevices(vm, driver, priv->monitor, vm->def,
+    //                 &nnicindexes, &nicindexes) <0 ){
+    //     virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+    //                    _("Failed while setting up Guest Network"));
+    //     return -1;
+    // }
+
+    // if (virDomainCgroupSetupCgroup("ch", vm,
+    //                                 nnicindexes, nicindexes,
+    //                                 &priv->cgroup,
+    //                                 cfg->cgroupControllers,
+    //                                 0, /*maxThreadsPerProc*/
+    //                                 priv->driver->privileged,
+    //                                 priv->machineName) < 0)
+    //     return -1;
+
+    if (virCHMonitorRestoreVM(priv->monitor, from) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("failed to restore domain"));
+        return -1;
+    }
+
+    if (virCHMonitorResumeVM(priv->monitor) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                    _("failed to resume domain"));
+        return -1;
+    }
 
     return 0;
 }
