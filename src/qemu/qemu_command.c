@@ -7185,6 +7185,7 @@ qemuBuildAccelCommandLine(virCommand *cmd,
     case VIR_DOMAIN_VIRT_TEST:
     case VIR_DOMAIN_VIRT_VMWARE:
     case VIR_DOMAIN_VIRT_HYPERV:
+    case VIR_DOMAIN_VIRT_MSHV:
     case VIR_DOMAIN_VIRT_VBOX:
     case VIR_DOMAIN_VIRT_PHYP:
     case VIR_DOMAIN_VIRT_PARALLELS:
