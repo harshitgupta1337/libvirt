@@ -547,52 +547,6 @@ virSocketSendMsgWithFDs(int sock, const char *payload, int *fds, size_t fds_len)
     return ret;
 }
 
-
-/**
- * virSocketRecv:
- * @sock: socket to poll and receive response on
- *
- * This function polls @sock for response
- * Returns received response or NULL on error.
- */
-char *
-virSocketRecv(int sock)
-{
-    struct pollfd pfds[1];
-    char *buf = NULL;
-    size_t buf_len = 1024;
-    int ret;
-
-    buf = g_new0(char, buf_len);
-
-    pfds[0].fd = sock;
-    pfds[0].events = POLLIN;
-
-    do {
-        ret = poll(pfds, G_N_ELEMENTS(pfds), PKT_TIMEOUT_MS);
-    } while (ret < 0 && errno == EINTR);
-
-    if (ret <= 0) {
-        if (ret < 0) {
-            virReportSystemError(errno, _("Poll on sock %1$d failed"), sock);
-        } else if (ret == 0) {
-            virReportSystemError(errno, _("Poll on sock %1$d timed out"), sock);
-        }
-        return NULL;
-    }
-
-    do {
-        ret = recv(sock, buf, buf_len - 1, 0);
-    } while (ret < 0 && errno == EINTR);
-
-    if (ret < 0) {
-        virReportSystemError(errno, _("recv on sock %1$d failed"), sock);
-        return NULL;
-    }
-
-    return g_steal_pointer(&buf);
-}
-
 #else /* WIN32 */
 int
 virSocketSendFD(int sock G_GNUC_UNUSED, int fd G_GNUC_UNUSED)
@@ -617,13 +571,5 @@ virSocketSendMsgWithFDs(int sock G_GNUC_UNUSED,
     virReportSystemError(ENOSYS, "%s",
                          _("FD passing is not supported on this platform"));
     return -1;
-}
-
-char *
-virSocketRecv(int sock G_GNUC_UNUSED)
-{
-    virReportSystemError(ENOSYS, "%s",
-                         _("sockets are not supported on this platform"));
-
 }
 #endif  /* WIN32 */

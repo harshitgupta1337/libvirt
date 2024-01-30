@@ -3371,7 +3371,6 @@ virSecureEraseString;
 
 
 # util/virsocket.h
-virSocketRecv;
 virSocketRecvFD;
 virSocketSendFD;
 virSocketSendMsgWithFDs;
