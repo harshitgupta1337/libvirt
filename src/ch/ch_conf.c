@@ -69,6 +69,8 @@ virCaps *virCHDriverCapsInit(void)
 
     virCapabilitiesAddGuestDomain(guest, VIR_DOMAIN_VIRT_KVM,
                                   NULL, NULL, 0, NULL);
+    virCapabilitiesAddGuestDomain(guest, VIR_DOMAIN_VIRT_HYPERV,
+                                  NULL, NULL, 0, NULL);
     return g_steal_pointer(&caps);
 }
 
