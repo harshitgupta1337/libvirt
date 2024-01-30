@@ -32,6 +32,7 @@
 #include "viraccessapicheck.h"
 #include "virchrdev.h"
 #include "virerror.h"
+#include "virfile.h"
 #include "virlog.h"
 #include "virobject.h"
 #include "virtypedparam.h"
@@ -874,6 +875,12 @@ static int chStateInitialize(bool privileged,
         virReportError(VIR_ERR_INVALID_ARG, "%s",
                        _("Driver does not support embedded mode"));
         return -1;
+    }
+
+    if (!(virFileExists("/dev/kvm") || virFileExists("/dev/mshv"))) {
+        virReportError(VIR_ERR_DEVICE_MISSING, "%s",
+                       _("/dev/kvm and /dev/mshv. ch driver failed to initialize."));
+        return VIR_DRV_STATE_INIT_ERROR;
     }
 
     ch_driver = g_new0(virCHDriver, 1);
