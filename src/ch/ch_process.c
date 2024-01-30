@@ -472,10 +472,8 @@ chProcessAddNetworkDevices(virCHDriver *driver,
                            int **nicindexes,
                            size_t *nnicindexes)
 {
-    size_t i, j, tapfd_len;
-    int mon_sockfd, http_res, ret;
-    g_autofree int *tapfds = NULL;
-    g_autoptr(virJSONValue) net = NULL;
+    size_t i;
+    VIR_AUTOCLOSE mon_sockfd = -1;
     struct sockaddr_un server_addr;
     g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     g_auto(virBuffer) http_headers = VIR_BUFFER_INITIALIZER;
@@ -497,13 +495,13 @@ chProcessAddNetworkDevices(virCHDriver *driver,
     if (virStrcpyStatic(server_addr.sun_path, mon->socketpath) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("UNIX socket path '%1$s' too long"), mon->socketpath);
-        goto err;
+        return -1;
     }
 
     if (connect(mon_sockfd, (struct sockaddr *)&server_addr,
                 sizeof(server_addr)) == -1) {
         virReportSystemError(errno, "%s", _("Failed to connect to mon socket"));
-        goto err;
+        return -1;
     }
 
     virBufferAddLit(&http_headers, "PUT /api/v1/vm.add-net HTTP/1.1\r\n");
@@ -511,8 +509,13 @@ chProcessAddNetworkDevices(virCHDriver *driver,
     virBufferAddLit(&http_headers, "Content-Type: application/json\r\n");
 
     for (i = 0; i < vmdef->nnets; i++) {
+        g_autofree int *tapfds = NULL;
         g_autofree char *payload = NULL;
         g_autofree char *response = NULL;
+        size_t j;
+        size_t tapfd_len;
+        int http_res;
+        int rc;
 
         if (vmdef->nets[i]->driver.virtio.queues == 0) {
             /* "queues" here refers to queue pairs. When 0, initialize
@@ -525,7 +528,7 @@ chProcessAddNetworkDevices(virCHDriver *driver,
         if (virCHDomainValidateActualNetDef(vmdef->nets[i]) < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                            _("net definition failed validation"));
-            goto err;
+            return -1;
         }
 
         tapfds = g_new0(int, tapfd_len);
@@ -534,12 +537,12 @@ chProcessAddNetworkDevices(virCHDriver *driver,
         /* Connect Guest interfaces */
         if (virCHConnetNetworkInterfaces(driver, vmdef, vmdef->nets[i], tapfds,
                                          nicindexes, nnicindexes) < 0)
-            goto err;
+            return -1;
 
         if (virCHMonitorBuildNetJson(vmdef->nets[i], &payload) < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                            _("Failed to build net json"));
-            goto err;
+            return -1;
         }
 
         VIR_DEBUG("payload sent with net-add request to CH = %s", payload);
@@ -549,42 +552,40 @@ chProcessAddNetworkDevices(virCHDriver *driver,
         virBufferAsprintf(&buf, "%s", payload);
         payload = virBufferContentAndReset(&buf);
 
-        if (virSocketSendMsgWithFDs(mon_sockfd, payload, tapfds, tapfd_len) < 0) {
-            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                           _("Failed to send net-add request to CH"));
-            goto err;
-        }
+        rc = virSocketSendMsgWithFDs(mon_sockfd, payload, tapfds, tapfd_len);
 
         /* Close sent tap fds in Libvirt, as they have been dup()ed in CH */
         for (j = 0; j < tapfd_len; j++) {
             VIR_FORCE_CLOSE(tapfds[j]);
         }
 
+        if (rc < 0) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("Failed to send net-add request to CH"));
+            return -1;
+        }
+
         /* Process the response from CH */
         response = virSocketRecv(mon_sockfd);
         if (response == NULL) {
-            VIR_ERROR(_("Failed while receiving response from CH"));
-            goto err;
+            return -1;
         }
 
         /* Parse the HTTP response code */
-        ret = sscanf(response, "HTTP/1.%*d %d", &http_res);
-        if (ret != 1) {
-            VIR_ERROR(_("Failed to parse HTTP response code"));
-            goto err;
+        rc = sscanf(response, "HTTP/1.%*d %d", &http_res);
+        if (rc != 1) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("Failed to parse HTTP response code"));
+            return -1;
         }
         if (http_res != 204 && http_res != 200) {
-            VIR_ERROR(_("Unexpected response from CH:  %1$d"), http_res);
-            goto err;
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("Unexpected response from CH: %1$d"), http_res);
+            return -1;
         }
     }
 
-    VIR_FORCE_CLOSE(mon_sockfd);
     return 0;
-
- err:
-    VIR_FORCE_CLOSE(mon_sockfd);
-    return -1;
 }
 
 /**

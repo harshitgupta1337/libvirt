@@ -1,4 +1,3 @@
-
 /*
  * Copyright Microsoft Corp. 2023
  *
