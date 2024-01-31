@@ -8626,6 +8626,7 @@ qemuBuildInterfaceConnect(virDomainObj *vm,
     bool vhostfd = false; /* also used to signal processing of tapfds */
     size_t tapfdSize = net->driver.virtio.queues;
     g_autofree int *tapfd = g_new0(int, tapfdSize + 1);
+    g_autoptr(virQEMUDriverConfig) cfg = virQEMUDriverGetConfig(priv->driver);
 
     memset(tapfd, -1, (tapfdSize + 1) * sizeof(*tapfd));
 
@@ -8636,8 +8637,12 @@ qemuBuildInterfaceConnect(virDomainObj *vm,
     case VIR_DOMAIN_NET_TYPE_NETWORK:
     case VIR_DOMAIN_NET_TYPE_BRIDGE:
         vhostfd = true;
-        if (qemuInterfaceBridgeConnect(vm->def, priv->driver, net,
-                                       tapfd, &tapfdSize) < 0)
+        if (virDomainInterfaceBridgeConnect(vm->def, net,
+                                       tapfd, tapfdSize,
+                                       priv->driver->privileged,
+                                       priv->driver->ebtables,
+                                       priv->driver->config->macFilter,
+                                       cfg->bridgeHelperName) < 0)
             return -1;
         break;
 

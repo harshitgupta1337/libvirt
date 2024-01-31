@@ -1646,6 +1646,7 @@ virDomainDriverSetupPersistentDefBlkioParams;
 
 # hypervisor/domain_interface.h
 virDomainClearNetBandwidth;
+virDomainInterfaceBridgeConnect;
 virDomainInterfaceClearQoS;
 virDomainInterfaceDeleteDevice;
 virDomainInterfaceEthernetConnect;
