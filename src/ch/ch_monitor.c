@@ -277,18 +277,15 @@ virCHMonitorBuildNetJson(virDomainNetDef *net, char **jsonstr)
     g_autoptr(virJSONValue) net_json = virJSONValueNewObject();
     virDomainNetType actualType = virDomainNetGetActualType(net);
 
-
-
-    if (actualType == VIR_DOMAIN_NET_TYPE_ETHERNET) {
+    /* If "ip" is provided in domain def, pass it to CH. nips should be either
+     * 0 or 1. This is already validated in virCHDomainValidateActualNetDef
+     */
+    if (actualType == VIR_DOMAIN_NET_TYPE_ETHERNET &&
+        net->guestIP.nips == 1) {
         const virNetDevIPAddr *ip;
         g_autofree char *addr = NULL;
         virSocketAddr netmask;
         g_autofree char *netmaskStr = NULL;
-
-        /* nips should be 1, this is already validated in
-        virCHDomainValidateActualNetDef */
-        if (net->guestIP.nips != 1)
-            return -1;
 
         ip = net->guestIP.ips[0];
 
@@ -308,6 +305,7 @@ virCHMonitorBuildNetJson(virDomainNetDef *net, char **jsonstr)
 
         if (!(netmaskStr = virSocketAddrFormat(&netmask)))
             return -1;
+
         if (virJSONValueObjectAppendString(net_json, "mask", netmaskStr) < 0)
             return -1;
     }
