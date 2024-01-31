@@ -509,9 +509,10 @@ virSocketSendMsgWithFDs(int sock, const char *payload, int *fds, size_t fds_len)
     struct iovec iov[1]; /* Send a single payload, so set vector len to 1 */
     int ret;
     g_autofree char *control = NULL;
+    size_t control_size = CMSG_SPACE(sizeof(int)*fds_len);
     struct cmsghdr *cmsg;
 
-    control = g_new0(char, CMSG_SPACE(sizeof(int) * fds_len));
+    control = g_new0(char, control_size);
 
     iov[0].iov_base = (void *) payload;
     iov[0].iov_len = strlen(payload);
@@ -520,7 +521,7 @@ virSocketSendMsgWithFDs(int sock, const char *payload, int *fds, size_t fds_len)
     msg.msg_iovlen = 1;
 
     msg.msg_control = control;
-    msg.msg_controllen = sizeof(control);
+    msg.msg_controllen = control_size;
 
     cmsg = CMSG_FIRSTHDR(&msg);
     /* check to eliminate "potential null pointer dereference" errors during build */
