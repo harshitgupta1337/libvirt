@@ -79,6 +79,7 @@ virCHConnetNetworkInterfaces(virCHDriver *driver,
             return -1;
 
         break;
+    case VIR_DOMAIN_NET_TYPE_BRIDGE:
     case VIR_DOMAIN_NET_TYPE_NETWORK:
         if (virDomainInterfaceBridgeConnect(vm, net,
                                             tapfds,
@@ -89,7 +90,6 @@ virCHConnetNetworkInterfaces(virCHDriver *driver,
                                             NULL) < 0)
             return -1;
         break;
-    case VIR_DOMAIN_NET_TYPE_BRIDGE:
     case VIR_DOMAIN_NET_TYPE_DIRECT:
     case VIR_DOMAIN_NET_TYPE_USER:
     case VIR_DOMAIN_NET_TYPE_SERVER:
