@@ -541,6 +541,9 @@ virCHMonitorNew(virDomainObj *vm, virCHDriverConfig *cfg)
     g_autoptr(virCHMonitor) mon = NULL;
     g_autoptr(virCommand) cmd = NULL;
     const char *socketdir = cfg->stateDir;
+    const char *logdir = cfg->logDir;
+    g_autofree char *logfile = NULL;
+
     int socket_fd = 0;
 
     if (virCHMonitorInitialize() < 0)
@@ -564,6 +567,14 @@ virCHMonitorNew(virDomainObj *vm, virCHDriverConfig *cfg)
         return NULL;
     }
 
+    logfile = g_strdup_printf("%s/%s.log", logdir, vm->def->name);
+    if (g_mkdir_with_parents(logdir, 0777) < 0) {
+        virReportSystemError(errno,
+                             _("Cannot create log directory '%1$s'"),
+                             logdir);
+        return NULL;
+    }
+
     if (g_mkdir_with_parents(cfg->saveDir, 0777) < 0) {
         virReportSystemError(errno,
                              _("Cannot create save directory '%1$s'"),
@@ -583,6 +594,9 @@ virCHMonitorNew(virDomainObj *vm, virCHDriverConfig *cfg)
 
     virCommandAddArg(cmd, "--api-socket");
     virCommandAddArgFormat(cmd, "fd=%d", socket_fd);
+    virCommandAddArg(cmd, "-v");
+    virCommandAddArg(cmd, "--log-file");
+    virCommandAddArgFormat(cmd, "%s", logfile);
     virCommandPassFD(cmd, socket_fd, VIR_COMMAND_PASS_FD_CLOSE_PARENT);
 
     /* launch Cloud-Hypervisor socket */
