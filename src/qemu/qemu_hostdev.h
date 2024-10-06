@@ -43,12 +43,6 @@ int qemuHostdevPrepareNVMeDisks(virQEMUDriver *driver,
                                 const char *name,
                                 virDomainDiskDef **disks,
                                 size_t ndisks);
-int qemuHostdevPreparePCIDevices(virQEMUDriver *driver,
-                                 const char *name,
-                                 const unsigned char *uuid,
-                                 virDomainHostdevDef **hostdevs,
-                                 int nhostdevs,
-                                 unsigned int flags);
 int qemuHostdevPrepareUSBDevices(virQEMUDriver *driver,
                                  const char *name,
                                  virDomainHostdevDef **hostdevs,

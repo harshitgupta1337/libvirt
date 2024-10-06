@@ -153,20 +153,6 @@ qemuHostdevPrepareNVMeDisks(virQEMUDriver *driver,
 }
 
 int
-qemuHostdevPreparePCIDevices(virQEMUDriver *driver,
-                             const char *name,
-                             const unsigned char *uuid,
-                             virDomainHostdevDef **hostdevs,
-                             int nhostdevs,
-                             unsigned int flags)
-{
-    return virHostdevPreparePCIDevices(driver->hostdevMgr,
-                                       QEMU_DRIVER_NAME,
-                                       name, uuid, hostdevs,
-                                       nhostdevs, flags);
-}
-
-int
 qemuHostdevPrepareUSBDevices(virQEMUDriver *driver,
                              const char *name,
                              virDomainHostdevDef **hostdevs,
@@ -244,7 +230,8 @@ qemuHostdevPrepareDomainDevices(virQEMUDriver *driver,
     if (qemuHostdevPrepareNVMeDisks(driver, def->name, def->disks, def->ndisks) < 0)
         return -1;
 
-    if (qemuHostdevPreparePCIDevices(driver, def->name, def->uuid,
+    if (virHostdevPreparePCIDevices(driver->hostdevMgr, QEMU_DRIVER_NAME,
+                                     def->name, def->uuid,
                                      def->hostdevs, def->nhostdevs, flags) < 0)
         return -1;
 
