@@ -1670,6 +1670,7 @@ virCloseCallbacksDomainRunForConn;
 # hypervisor/virhostdev.h
 virHostdevFindUSBDevice;
 virHostdevManagerGetDefault;
+virHostdevNeedsVFIO;
 virHostdevPCINodeDeviceDetach;
 virHostdevPCINodeDeviceReAttach;
 virHostdevPCINodeDeviceReset;
