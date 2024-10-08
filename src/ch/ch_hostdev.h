@@ -22,3 +22,6 @@
 
 #include "ch_conf.h"
 #include "domain_conf.h"
+
+int
+virCHDomainPrepareHostdev(virDomainHostdevDef *hostdev);
