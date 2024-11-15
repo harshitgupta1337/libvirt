@@ -2282,6 +2282,7 @@ chConnectDomainEventDeregisterAny(virConnectPtr conn,
 }
 
 
+static int
 chNodeGetMemoryStats(virConnectPtr conn,
                        int cellNum,
                        virNodeMemoryStatsPtr params,
