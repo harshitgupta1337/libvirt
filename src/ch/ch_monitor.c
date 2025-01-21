@@ -131,28 +131,40 @@ virCHMonitorBuildPayloadJson(virJSONValue *content, virDomainDef *vmdef)
 {
     g_autoptr(virJSONValue) payload = virJSONValueNewObject();
 
-
     if (vmdef->os.kernel == NULL) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Kernel image path in this domain is not defined"));
+                       _("Kernel image path in this domain is not defined. With sev_snp=on, pass the igvm path"));
         return -1;
+    }
+
+    if (vmdef->sec &&
+        vmdef->sec->sectype == VIR_DOMAIN_LAUNCH_SECURITY_SEV_SNP) {
+        if (virJSONValueObjectAppendString(payload, "igvm", vmdef->os.kernel) < 0)
+            return -1;
+        if (vmdef->sec->data.sev_snp.host_data) {
+            if (virJSONValueObjectAppendString(payload, "host_data",
+                                         vmdef->sec->data.sev_snp.host_data) < 0)
+                return -1;
+         }
     } else {
-        if (virJSONValueObjectAppendString(payload, "kernel", vmdef->os.kernel) < 0)
+        if (virJSONValueObjectAppendString(payload, "kernel",
+                                     vmdef->os.kernel) < 0)
             return -1;
-    }
+        if (vmdef->os.cmdline) {
+            if (virJSONValueObjectAppendString(payload, "cmdline",
+                                         vmdef->os.cmdline) < 0)
+                return -1;
+        }
 
-    if (vmdef->os.cmdline) {
-        if (virJSONValueObjectAppendString(payload, "cmdline", vmdef->os.cmdline) < 0)
-            return -1;
-    }
-
-    if (vmdef->os.initrd != NULL) {
-        if (virJSONValueObjectAppendString(payload, "initramfs", vmdef->os.initrd) < 0)
-            return -1;
+        if (vmdef->os.initrd != NULL) {
+            if (virJSONValueObjectAppendString(payload, "initramfs",
+                                         vmdef->os.initrd) < 0)
+                return -1;
+        }
     }
 
     if (virJSONValueObjectAppend(content, "payload", &payload) < 0)
-    return -1;
+        return -1;
 
     return 0;
 }
@@ -427,6 +439,23 @@ virCHMonitorBuildDevicesJson(virJSONValue *content,
 }
 
 static int
+virCHMonitorBuildPlatformJson(virJSONValue *content, virDomainDef *vmdef)
+{
+    g_autoptr(virJSONValue) platform = virJSONValueNewObject();
+
+    if (vmdef->sec &&
+        vmdef->sec->sectype == VIR_DOMAIN_LAUNCH_SECURITY_SEV_SNP) {
+        if (virJSONValueObjectAppendBoolean(platform, "sev_snp", 1) < 0)
+            return -1;
+
+        if (virJSONValueObjectAppend(content, "platform", &platform) < 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+static int
 virCHMonitorBuildVMJson(virCHDriver *driver, virDomainDef *vmdef,
                         char **jsonstr)
 {
@@ -454,6 +483,8 @@ virCHMonitorBuildVMJson(virCHDriver *driver, virDomainDef *vmdef,
             return -1;
     }
 
+    if (virCHMonitorBuildPlatformJson(content, vmdef) < 0)
+        return -1;
 
     if (virCHMonitorBuildDisksJson(content, vmdef) < 0)
         return -1;
