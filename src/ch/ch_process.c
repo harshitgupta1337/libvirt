@@ -846,6 +846,13 @@ virCHProcessPrepareHost(virCHDriver *driver, virDomainObj *vm)
     if (virCHHostdevPrepareDomainDevices(driver, vm->def, hostdev_flags) < 0)
         return -1;
 
+    if (g_mkdir_with_parents(cfg->logDir, 0777) < 0) {
+        virReportSystemError(errno,
+                            _("Cannot create log directory '%1$s'"),
+                            cfg->saveDir);
+        return -1;
+    }
+
     /* Ensure no historical cgroup for this VM is lying around */
     VIR_DEBUG("Ensuring no historical cgroup is lying around");
     virDomainCgroupRemoveCgroup(vm, priv->cgroup, priv->machineName);
@@ -905,6 +912,13 @@ virCHProcessStart(virCHDriver *driver,
         return -1;
     }
 
+    if (virCHProcessPrepareDomain(vm) < 0) {
+        return -1;
+    }
+
+    if (virCHProcessPrepareHost(driver, vm) < 0)
+        return -1;
+
     VIR_DEBUG("Creating domain log file for %s domain", vm->def->name);
     if (!(logCtxt = domainLogContextNew(cfg->stdioLogD, cfg->logDir,
                                         CH_DRIVER_NAME,
@@ -914,13 +928,6 @@ virCHProcessStart(virCHDriver *driver,
         return -1;
     }
     logfile = domainLogContextGetWriteFD(logCtxt);
-
-    if (virCHProcessPrepareDomain(vm) < 0) {
-        return -1;
-    }
-
-    if (virCHProcessPrepareHost(driver, vm) < 0)
-        return -1;
 
     if (!priv->monitor) {
         /* And we can get the first monitor connection now too */
