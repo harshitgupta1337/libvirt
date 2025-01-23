@@ -210,7 +210,8 @@ chDomainCreateXML(virConnectPtr conn,
     unsigned int parse_flags = VIR_DOMAIN_DEF_PARSE_INACTIVE;
     g_autofree char *managed_save_path = NULL;
 
-    virCheckFlags(VIR_DOMAIN_START_VALIDATE, NULL);
+    virCheckFlags(VIR_DOMAIN_START_PAUSED |
+                  VIR_DOMAIN_START_VALIDATE, NULL);
 
     if (flags & VIR_DOMAIN_START_VALIDATE)
         parse_flags |= VIR_DOMAIN_DEF_PARSE_VALIDATE_SCHEMA;
@@ -268,7 +269,7 @@ chDomainCreateWithFlags(virDomainPtr dom, unsigned int flags)
     g_autofree char *managed_save_path = NULL;
     int ret = -1;
 
-    virCheckFlags(0, -1);
+    virCheckFlags(VIR_DOMAIN_START_PAUSED, -1);
 
     if (!(vm = virCHDomainObjFromDomain(dom)))
         goto cleanup;
@@ -671,7 +672,7 @@ chDomainDestroyFlags(virDomainPtr dom, unsigned int flags)
     virObjectEvent *event = NULL;
     int ret = -1;
 
-    virCheckFlags(0, -1);
+    virCheckFlags(VIR_DOMAIN_START_PAUSED, -1);
 
     if (!(vm = virCHDomainObjFromDomain(dom)))
         goto cleanup;
