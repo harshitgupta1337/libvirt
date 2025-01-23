@@ -243,7 +243,7 @@ chDomainCreateXML(virConnectPtr conn,
     if (virDomainObjBeginJob(vm, VIR_JOB_MODIFY) < 0)
         goto cleanup;
 
-    if (virCHProcessStart(driver, vm, VIR_DOMAIN_RUNNING_BOOTED) < 0)
+    if (virCHProcessStart(driver, vm, VIR_DOMAIN_RUNNING_BOOTED, flags) < 0)
         goto endjob;
 
     dom = virGetDomain(conn, vm->def->name, vm->def->uuid, vm->def->id);
@@ -303,7 +303,7 @@ chDomainCreateWithFlags(virDomainPtr dom, unsigned int flags)
         vm->hasManagedSave = false;
         ret = 0;
     } else {
-        ret = virCHProcessStart(driver, vm, VIR_DOMAIN_RUNNING_BOOTED);
+        ret = virCHProcessStart(driver, vm, VIR_DOMAIN_RUNNING_BOOTED, flags);
     }
 
     if (ret == 0) {

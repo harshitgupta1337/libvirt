@@ -25,7 +25,8 @@
 
 int virCHProcessStart(virCHDriver *driver,
                       virDomainObj *vm,
-                      virDomainRunningReason reason);
+                      virDomainRunningReason reason,
+                      unsigned int flags);
 int virCHProcessStop(virCHDriver *driver,
                      virDomainObj *vm,
                      virDomainShutoffReason reason);

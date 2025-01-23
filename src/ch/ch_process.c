@@ -892,7 +892,8 @@ virCHProcessPrepareDomain(virDomainObj *vm)
 int
 virCHProcessStart(virCHDriver *driver,
                   virDomainObj *vm,
-                  virDomainRunningReason reason)
+                  virDomainRunningReason reason,
+                  unsigned int flags)
 {
     int ret = -1;
     virCHDomainObjPrivate *priv = vm->privateData;
@@ -901,6 +902,7 @@ virCHProcessStart(virCHDriver *driver,
     size_t nnicindexes = 0;
     g_autoptr(domainLogContext) logCtxt = NULL;
     int logfile = -1;
+    bool start_paused = (flags & VIR_DOMAIN_START_PAUSED) != 0;
 
     if (virDomainObjIsActive(vm)) {
         virReportError(VIR_ERR_OPERATION_INVALID, "%s",
@@ -971,16 +973,23 @@ virCHProcessStart(virCHDriver *driver,
     if (virDomainInterfaceStartDevices(vm->def) < 0)
         return -1;
 
-    if (virCHMonitorBootVM(priv->monitor, logCtxt) < 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("failed to boot guest VM"));
-        goto cleanup;
+    if (!start_paused) {
+        if (virCHMonitorBootVM(priv->monitor, logCtxt) < 0) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("failed to boot guest VM"));
+            goto cleanup;
+        }
+
+        if (virCHProcessSetup(vm) < 0)
+            goto cleanup;
     }
 
-    if (virCHProcessSetup(vm) < 0)
-        goto cleanup;
 
-    virDomainObjSetState(vm, VIR_DOMAIN_RUNNING, reason);
+    if (start_paused) {
+        virDomainObjSetState(vm, VIR_DOMAIN_PAUSED, reason);
+    } else {
+        virDomainObjSetState(vm, VIR_DOMAIN_RUNNING, reason);
+    }
 
     return 0;
 
