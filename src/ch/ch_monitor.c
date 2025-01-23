@@ -1076,7 +1076,31 @@ virCHMonitorSuspendVM(virCHMonitor *mon)
 int
 virCHMonitorResumeVM(virCHMonitor *mon)
 {
-    return virCHMonitorPutNoContent(mon, URL_VM_RESUME, NULL);
+    g_autoptr(virJSONValue) info = NULL;
+    virJSONValue *state = NULL;
+    const char *stateStr = NULL;
+
+    if (virCHMonitorGetInfo(mon, &info) < 0)
+        return -1;
+
+    state = virJSONValueObjectGet(info, "state");
+    if (!state) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("missing 'state' in info query result from cloud-hypervisor"));
+        return -1;
+    }
+    stateStr = virJSONValueGetString(state);
+
+    if (STREQ(stateStr, "Created")) {
+        /* Guest was never booted. Boot now */
+        return virCHMonitorBootVM(mon, NULL);
+    } else if (STREQ(stateStr, "Paused")) {
+        return virCHMonitorPutNoContent(mon, URL_VM_RESUME, NULL);
+    } else {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("VM is not in a state that can be resumed"));
+        return -1;
+    }
 }
 
 int
