@@ -130,6 +130,10 @@ static int
 virCHMonitorBuildPayloadJson(virJSONValue *content, virDomainDef *vmdef)
 {
     g_autoptr(virJSONValue) payload = virJSONValueNewObject();
+    g_autofree unsigned char *tmp = NULL;
+    size_t len;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
+    g_autofree char *host_data = NULL;
 
     if (vmdef->os.kernel == NULL) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -142,10 +146,24 @@ virCHMonitorBuildPayloadJson(virJSONValue *content, virDomainDef *vmdef)
         if (virJSONValueObjectAppendString(payload, "igvm", vmdef->os.kernel) < 0)
             return -1;
         if (vmdef->sec->data.sev_snp.host_data) {
-            if (virJSONValueObjectAppendString(payload, "host_data",
-                                         vmdef->sec->data.sev_snp.host_data) < 0)
+            /* Libvirt provided host_data is base64 encoded and cloud-hypervisor
+               requires host_data hex encoded. Base64 decode and hex encode before
+               sending to cloud-hypervisor.*/
+            tmp = g_base64_decode(vmdef->sec->data.sev_snp.host_data, &len);
+            if (len != 32) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("Invalid host_data provdied. Expected 32 bytes"));
                 return -1;
-         }
+            }
+            while (len > 0) {
+                virBufferAsprintf(&buf, "%02x", tmp[32-len]);
+                len--;
+            }
+            host_data = virBufferContentAndReset(&buf);
+            if (virJSONValueObjectAppendString(payload, "host_data",
+                                               host_data) < 0)
+                return -1;
+        }
     } else {
         if (virJSONValueObjectAppendString(payload, "kernel",
                                      vmdef->os.kernel) < 0)
