@@ -965,10 +965,8 @@ virCHMonitorRefreshThreadInfo(virCHMonitor *mon)
             info[i].vcpuInfo.online = true;
             info[i].vcpuInfo.cpuid = cpuid;
             VIR_DEBUG("vcpu%d -> tid: %d", cpuid, tids[i]);
-        } else if (STRPREFIX(data, "_disk") || STRPREFIX(data, "_net") ||
-                   STRPREFIX(data, "_rng")) {
-            /* Prefixes used by cloud-hypervisor for IO Threads are captured at
-             * https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/vmm/src/device_manager.rs */
+        } else if (STRPREFIX(data, "_disk") || STRPREFIX(data, "net") ||
+                   STRPREFIX(data, "iou-wrk")) {
             info[i].type = virCHThreadTypeIO;
             info[i].ioInfo.tid = tids[i];
             virStrcpy(info[i].ioInfo.thrName, data, VIRCH_THREAD_NAME_LEN - 1);
