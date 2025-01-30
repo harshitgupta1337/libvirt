@@ -337,7 +337,7 @@ virCHProcessSetupIOThread(virDomainObj *vm,
                                 NULL); /* CLH doesn't allow choosing a scheduler for iothreads.*/
 }
 
-static int
+int
 virCHProcessSetupIOThreads(virDomainObj *vm)
 {
     virCHDomainObjPrivate *priv = vm->privateData;

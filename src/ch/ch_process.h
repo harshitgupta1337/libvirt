@@ -36,3 +36,6 @@ int virCHProcessSetupVcpu(virDomainObj *vm,
 int virCHProcessStartRestore(virCHDriver *driver,
                          virDomainObj *vm,
                          const char *from);
+
+int
+virCHProcessSetupIOThreads(virDomainObj *vm);

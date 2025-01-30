@@ -48,6 +48,8 @@ VIR_ENUM_IMPL(virCHEvent,
               "vm:snapshotted",
               "vm:restoring",
               "vm:restored",
+              "virtio-device:activated",
+              "virtio-device:reset",
 );
 
 static int
@@ -114,6 +116,13 @@ virCHProcessEvent(virCHMonitor *mon,
     case VIR_CH_EVENT_VM_RESTORING:
     case VIR_CH_EVENT_VM_RESTORED:
     case VIR_CH_EVENT_VM_DELETED:
+    case VIR_CH_EVENT_VIRTIO_DEVICE_RESET:
+        break;
+    case VIR_CH_EVENT_VIRTIO_DEVICE_ACTIVATED:
+        if (virCHProcessSetupIOThreads(vm) < 0) {
+            VIR_WARN("Failed to setup IO threads for VM(%s)", vm->def->name);
+            ret = -1;
+        }
         break;
     case VIR_CH_EVENT_VMM_SHUTDOWN:
         if (virCHEventStopProcess(vm, VIR_DOMAIN_SHUTOFF_SHUTDOWN)) {
