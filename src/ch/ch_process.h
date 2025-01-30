@@ -39,3 +39,6 @@ int virCHProcessStartRestore(virCHDriver *driver,
 
 int
 virCHProcessSetupIOThreads(virDomainObj *vm);
+
+int
+virCHProcessSetup(virDomainObj *vm);

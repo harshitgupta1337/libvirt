@@ -106,7 +106,6 @@ virCHProcessEvent(virCHMonitor *mon,
     case VIR_CH_EVENT_VM_BOOTING:
     case VIR_CH_EVENT_VM_BOOTED:
     case VIR_CH_EVENT_VM_REBOOTING:
-    case VIR_CH_EVENT_VM_REBOOTED:
     case VIR_CH_EVENT_VM_PAUSING:
     case VIR_CH_EVENT_VM_PAUSED:
     case VIR_CH_EVENT_VM_RESUMING:
@@ -117,6 +116,12 @@ virCHProcessEvent(virCHMonitor *mon,
     case VIR_CH_EVENT_VM_RESTORED:
     case VIR_CH_EVENT_VM_DELETED:
     case VIR_CH_EVENT_VIRTIO_DEVICE_RESET:
+        break;
+    case VIR_CH_EVENT_VM_REBOOTED:
+        if (virCHProcessSetup(vm) < 0) {
+            VIR_WARN("Failed to setup VM(%s) process after reboot", vm->def->name);
+            ret = -1;
+        }
         break;
     case VIR_CH_EVENT_VIRTIO_DEVICE_ACTIVATED:
         if (virCHProcessSetupIOThreads(vm) < 0) {
