@@ -78,14 +78,21 @@ virCHProcessEvent(virCHMonitor *mon,
     virDomainObj *vm = mon->vm;
     int ret = 0;
 
+    if (!virDomainObjIsActive(vm)) {
+        VIR_WARN("%s: VM is not active, ignoring event", vm->def->name);
+        return 0;
+    }
+
     if (virJSONValueObjectHasKey(eventJSON, "source") == 0) {
         VIR_WARN("%s: Invalid JSON from monitor, no source key", vm->def->name);
         return -1;
     }
+
     if (virJSONValueObjectHasKey(eventJSON, "event") == 0) {
         VIR_WARN("%s: Invalid JSON from monitor, no event key", vm->def->name);
         return -1;
     }
+
     source = virJSONValueObjectGetString(eventJSON, "source");
     event = virJSONValueObjectGetString(eventJSON, "event");
     full_event = g_strdup_printf("%s:%s", source, event);
