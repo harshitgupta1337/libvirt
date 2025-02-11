@@ -269,26 +269,25 @@ static void
 virCHEventHandlerLoop(void *data)
 {
     virCHMonitor *mon = data;
-    virDomainObj *vm = NULL;
 
-    /* Obtain a vm reference */
-    vm = virObjectRef(mon->vm);
+    /* Obtain a mon reference */
+    mon = virObjectRef(mon);
 
-    VIR_DEBUG("%s: Event handler loop thread starting", vm->def->name);
+    VIR_DEBUG("%s: Event handler loop thread starting", mon->vm->def->name);
 
     mon->event_buffer.buffer = g_new0(char, CH_EVENT_BUFFER_SZ);
     mon->event_buffer.buf_fill_sz = 0;
 
     while (g_atomic_int_get(&mon->event_handler_stop) == 0) {
-        VIR_DEBUG("%s: Reading events from event monitor file", vm->def->name);
+        VIR_DEBUG("%s: Reading events from event monitor file", mon->vm->def->name);
         if (virCHReadProcessEvents(mon) < 0) {
             virCHStopEventHandler(mon);
         }
     }
 
     g_clear_pointer(&mon->event_buffer.buffer, g_free);
-    virObjectUnref(vm);
-    VIR_DEBUG("%s: Event handler loop thread exiting", vm->def->name);
+    VIR_DEBUG("%s: Event handler loop thread exiting", mon->vm->def->name);
+    virObjectUnref(mon);
     return;
 }
 
