@@ -78,6 +78,7 @@ virCHProcessEvent(virCHMonitor *mon,
     g_autofree char *timestamp = NULL;
     g_autofree char *full_event = NULL;
     virDomainObj *vm = mon->vm;
+    virCHDriver *driver =  ((virCHDomainObjPrivate *)vm->privateData)->driver;
     int ret = 0;
 
     if (!virDomainObjIsActive(vm)) {
@@ -135,6 +136,7 @@ virCHProcessEvent(virCHMonitor *mon,
                      vm->def->name);
             ret = -1;
         }
+        virCHDomainRemoveInactive(driver, vm);
         break;
     case VIR_CH_EVENT_VM_SHUTDOWN:
         virObjectLock(vm);
