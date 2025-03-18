@@ -133,7 +133,7 @@ virCHDriverConfigNew(bool privileged)
     if (!(cfg = virObjectNew(virCHDriverConfigClass)))
         return NULL;
 
-    cfg->cgroupControllers = -1; /* Auto detect */
+    cfg->cgroupControllers = 0;
 
     if (privileged) {
         if (virGetUserID(CH_USER, &cfg->user) < 0)
